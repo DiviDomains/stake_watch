@@ -1,0 +1,24 @@
+[general]
+db_path = "./data/stake_watch.db"
+network_staking_supply = 4_000_000_000
+alert_multiplier = 3
+alert_check_interval_secs = 300
+max_watches_per_user = 20
+
+[backend]
+type = "polling"
+rpc_url = "https://chainz.cryptoid.info/divi/api.dws"
+explorer_url = "https://chainz.cryptoid.info/divi"
+# Note: chainz uses REST API, not JSON-RPC. The RPC client auto-detects this.
+# Lottery detection is not available on chainz.
+# Address validation uses regex pattern matching instead of RPC.
+
+[backend.polling]
+interval_secs = 120
+
+[backend.rpc_auth]
+enabled = false
+# Set CHAINZ_API_KEY in .env for higher rate limits
+
+[fork_detection]
+enabled = false

@@ -1,0 +1,30 @@
+[general]
+db_path = "./data/stake_watch.db"
+network_staking_supply = 4_000_000_000
+alert_multiplier = 3
+alert_check_interval_secs = 300
+max_watches_per_user = 20
+
+[backend]
+type = "polling"
+rpc_url = "http://127.0.0.1:51473"
+explorer_url = "https://services.divi.domains/explorer"
+
+[backend.polling]
+interval_secs = 60
+
+[backend.rpc_auth]
+enabled = true
+# Set RPC_USERNAME and RPC_PASSWORD in .env
+
+[fork_detection]
+enabled = true
+check_interval_secs = 300
+
+[[fork_detection.endpoints]]
+name = "local-node"
+rpc_url = "http://127.0.0.1:51473"
+
+[[fork_detection.endpoints]]
+name = "services"
+rpc_url = "https://services.divi.domains/api/rpc/"

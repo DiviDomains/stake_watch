@@ -1,0 +1,212 @@
+mod alert_analyzer;
+mod block_processor;
+mod bot;
+mod config;
+mod db;
+mod fork_detector;
+mod monitor;
+mod notifier;
+mod rpc;
+mod stake_analyzer;
+mod utils;
+
+use anyhow::{Context, Result};
+use clap::Parser;
+use std::sync::Arc;
+use teloxide::prelude::*;
+use tracing::{error, info};
+
+// ---------------------------------------------------------------------------
+// CLI arguments
+// ---------------------------------------------------------------------------
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "stake_watch",
+    about = "Telegram bot for monitoring Divi blockchain staking",
+    version
+)]
+struct Cli {
+    /// Path to the TOML configuration file.
+    #[arg(short, long, default_value = "config.toml")]
+    config: String,
+
+    /// Path to the .env file for secrets.
+    #[arg(short, long, default_value = ".env")]
+    env: String,
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // 1. Initialize tracing (respects RUST_LOG env var)
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
+    // 2. Parse CLI args
+    let cli = Cli::parse();
+
+    // 3. Load .env file (non-fatal if missing -- env vars may be set externally)
+    match dotenvy::from_filename(&cli.env) {
+        Ok(path) => info!(path = %path.display(), "Loaded environment file"),
+        Err(e) => {
+            if cli.env == ".env" {
+                info!("No .env file found, using existing environment variables");
+            } else {
+                return Err(e).with_context(|| {
+                    format!("Failed to load env file: {}", cli.env)
+                });
+            }
+        }
+    }
+
+    // 4. Load configuration
+    let config = config::AppConfig::load(&cli.config)?;
+
+    // 5. Load secrets from environment
+    let secrets = config::Secrets::load()?;
+
+    // 6. Initialize database
+    let db_pool = db::init_db(&config.general.db_path)?;
+
+    // 7. Create RPC client
+    let rpc_client: Arc<dyn rpc::RpcClient> =
+        Arc::from(rpc::create_rpc_client(&config.backend, &secrets));
+
+    // 8. Log startup info
+    match rpc_client.get_block_count().await {
+        Ok(height) => {
+            info!(
+                height = height,
+                backend = %config.backend.backend_type,
+                rpc_url = %config.backend.rpc_url,
+                "Connected to blockchain"
+            );
+        }
+        Err(e) => {
+            error!(
+                error = %e,
+                backend = %config.backend.backend_type,
+                "Failed to connect to blockchain on startup -- will retry"
+            );
+        }
+    }
+
+    info!(
+        db_path = %config.general.db_path,
+        fork_detection = config.fork_detection.enabled,
+        max_watches = config.general.max_watches_per_user,
+        "Stake Watch starting"
+    );
+
+    // 9. Set up graceful shutdown
+    let shutdown = tokio::signal::ctrl_c();
+
+    // 10. Spawn concurrent tasks
+    //
+    // Each subsystem runs as an independent tokio task. The main function
+    // waits for a shutdown signal (SIGINT / ctrl-c) and then drops the
+    // tasks.
+
+    let config = Arc::new(config);
+    let secrets = Arc::new(secrets);
+
+    // Create Telegram bot
+    let bot = Bot::new(&secrets.telegram_bot_token);
+
+    // Create notifier
+    let notifier = Arc::new(notifier::Notifier::new(
+        bot.clone(),
+        db_pool.clone(),
+        config.backend.explorer_url.clone(),
+    ));
+
+    // Create block monitor channel
+    let (block_tx, block_rx) = tokio::sync::mpsc::channel::<String>(256);
+
+    // Start block monitor
+    let mut block_monitor = monitor::create_monitor(&config.backend, rpc_client.clone());
+    let monitor_tx = block_tx.clone();
+    let monitor_handle = tokio::spawn(async move {
+        if let Err(e) = block_monitor.start(monitor_tx).await {
+            error!(error = %e, "Block monitor failed");
+        }
+    });
+
+    // Start block processor
+    let processor = block_processor::BlockProcessor::new(
+        rpc_client.clone(),
+        db_pool.clone(),
+        notifier.clone(),
+    );
+    let processor_handle = tokio::spawn(async move {
+        processor.run(block_rx).await;
+    });
+
+    // Start Telegram bot
+    let bot_state = Arc::new(bot::BotState::new(
+        db_pool.clone(),
+        rpc_client.clone(),
+        (*config).clone(),
+        (*secrets).clone(),
+    ));
+    let bot_clone = bot.clone();
+    let bot_handle = tokio::spawn(async move {
+        bot::run_bot(bot_clone, bot_state).await;
+    });
+
+    // Start stake alert loop
+    let stake_analyzer = stake_analyzer::StakeAnalyzer::new(
+        rpc_client.clone(),
+        db_pool.clone(),
+        notifier.clone(),
+        config.general.clone(),
+    );
+    let alert_handle = tokio::spawn(async move {
+        stake_analyzer.run_alert_loop().await;
+    });
+
+    // Start fork detector (if enabled)
+    let fork_handle = if config.fork_detection.enabled {
+        let detector = fork_detector::ForkDetector::new(
+            db_pool.clone(),
+            notifier.clone(),
+            config.fork_detection.clone(),
+            secrets.admin_telegram_ids.clone(),
+        );
+        Some(tokio::spawn(async move {
+            detector.run().await;
+        }))
+    } else {
+        info!("Fork detection disabled");
+        None
+    };
+
+    info!("All systems initialized -- press Ctrl+C to shut down");
+
+    // Wait for shutdown signal
+    match shutdown.await {
+        Ok(()) => info!("Received shutdown signal"),
+        Err(e) => error!(error = %e, "Error waiting for shutdown signal"),
+    }
+
+    info!("Stake Watch shutting down");
+
+    // Abort tasks
+    monitor_handle.abort();
+    processor_handle.abort();
+    bot_handle.abort();
+    alert_handle.abort();
+    if let Some(h) = fork_handle {
+        h.abort();
+    }
+
+    Ok(())
+}

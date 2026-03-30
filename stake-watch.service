@@ -1,0 +1,18 @@
+[Unit]
+Description=Stake Watch - Telegram Divi Staking Monitor Bot
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/stake-watch
+ExecStart=/opt/stake-watch/stake_watch --config /opt/stake-watch/config/config.toml
+Restart=always
+RestartSec=10
+EnvironmentFile=/opt/stake-watch/.env
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

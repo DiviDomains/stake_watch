@@ -1,0 +1,30 @@
+[general]
+db_path = "./data/stake_watch.db"
+network_staking_supply = 4_000_000_000
+alert_multiplier = 3
+alert_check_interval_secs = 300
+max_watches_per_user = 20
+
+[backend]
+type = "socketio"
+rpc_url = "https://services.divi.domains/api/rpc/"
+explorer_url = "https://services.divi.domains/explorer"
+
+[backend.socketio]
+url = "https://services.divi.domains"
+path = "/zmq/socket.io"
+network_filter = "mainnet"
+
+[backend.polling]
+interval_secs = 120
+
+[backend.rpc_auth]
+enabled = false
+
+[fork_detection]
+enabled = false
+check_interval_secs = 300
+
+[[fork_detection.endpoints]]
+name = "services"
+rpc_url = "https://services.divi.domains/api/rpc/"
