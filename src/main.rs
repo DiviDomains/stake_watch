@@ -1,20 +1,10 @@
-mod alert_analyzer;
-mod block_processor;
-mod bot;
-mod config;
-mod db;
-mod fork_detector;
-mod monitor;
-mod notifier;
-mod rpc;
-mod stake_analyzer;
-mod utils;
-
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::sync::Arc;
 use teloxide::prelude::*;
 use tracing::{error, info};
+
+use stake_watch::{block_processor, bot, config, db, fork_detector, monitor, notifier, rpc, stake_analyzer};
 
 // ---------------------------------------------------------------------------
 // CLI arguments

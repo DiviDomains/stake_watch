@@ -110,6 +110,18 @@ pub trait RpcClient: Send + Sync {
     ) -> Result<Vec<AddressDelta>>;
     async fn get_lottery_block_winners(&self, hash: &str) -> Result<Option<LotteryWinners>>;
     async fn validate_address(&self, address: &str) -> Result<AddressValidation>;
+
+    /// Get the vault balance for an address using the Divi address index
+    /// with only_vaults=true. Returns balance in satoshis.
+    async fn get_vault_balance(&self, address: &str) -> Result<AddressBalance>;
+
+    /// Get vault transaction deltas using getaddressdeltas with only_vaults=true.
+    async fn get_vault_deltas(
+        &self,
+        address: &str,
+        start: Option<u64>,
+        end: Option<u64>,
+    ) -> Result<Vec<AddressDelta>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +299,40 @@ impl RpcClient for JsonRpcClient {
             serde_json::from_value(result).context("deserializing validateaddress")?;
         Ok(validation)
     }
+
+    async fn get_vault_balance(&self, address: &str) -> Result<AddressBalance> {
+        // Use getaddressbalance with only_vaults=true (second param)
+        let result = self
+            .call(
+                "getaddressbalance",
+                json!([{"addresses": [address]}, true]),
+            )
+            .await?;
+        let balance: AddressBalance =
+            serde_json::from_value(result).context("deserializing vault balance")?;
+        debug!(address, balance = balance.balance, "Got vault balance");
+        Ok(balance)
+    }
+
+    async fn get_vault_deltas(
+        &self,
+        address: &str,
+        start: Option<u64>,
+        end: Option<u64>,
+    ) -> Result<Vec<AddressDelta>> {
+        let mut addr_obj = json!({"addresses": [address]});
+        if let Some(s) = start {
+            addr_obj["start"] = json!(s);
+        }
+        if let Some(e) = end {
+            addr_obj["end"] = json!(e);
+        }
+        // Pass true as second param for only_vaults
+        let result = self.call("getaddressdeltas", json!([addr_obj, true])).await?;
+        let deltas: Vec<AddressDelta> =
+            serde_json::from_value(result).context("deserializing vault deltas")?;
+        Ok(deltas)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -421,6 +467,19 @@ impl RpcClient for ChainzClient {
             && (25..=34).contains(&address.len())
             && address.chars().all(|c| base58_chars.contains(c));
         Ok(AddressValidation { isvalid: is_valid })
+    }
+
+    async fn get_vault_balance(&self, _address: &str) -> Result<AddressBalance> {
+        Err(anyhow!("vault balance not supported on chainz backend"))
+    }
+
+    async fn get_vault_deltas(
+        &self,
+        _address: &str,
+        _start: Option<u64>,
+        _end: Option<u64>,
+    ) -> Result<Vec<AddressDelta>> {
+        Err(anyhow!("vault deltas not supported on chainz backend"))
     }
 }
 

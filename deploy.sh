@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-VPS_HOST="ubuntu@vps1.divi.domains"
+VPS_HOST="${DEPLOY_HOST:-ubuntu@dnsdivi}"
 VPS_DIR="/opt/stake-watch"
 BINARY_NAME="stake_watch"
 SERVICE_NAME="stake-watch"

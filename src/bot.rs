@@ -406,15 +406,30 @@ async fn handle_analyze(state: &BotState, telegram_id: i64, arg: &str) -> Result
         }
     };
 
-    // Fetch balance
-    let balance = match state.rpc.get_address_balance(&address).await {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(address = %address, error = %e, "Failed to fetch balance");
-            return Ok(format!(
-                "Could not fetch balance for <code>{}</code>.\nError: {e}",
-                truncate_address(&address)
-            ));
+    // Fetch balance -- try regular address index first, fall back to vault scan
+    let (balance, is_vault) = {
+        let regular = match state.rpc.get_address_balance(&address).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(address = %address, error = %e, "Failed to fetch balance");
+                return Ok(format!(
+                    "Could not fetch balance for <code>{}</code>.\nError: {e}",
+                    truncate_address(&address)
+                ));
+            }
+        };
+
+        if regular.balance > 0 {
+            (regular, false)
+        } else {
+            // Address index returned 0 -- try vault balance (only_vaults=true)
+            match state.rpc.get_vault_balance(&address).await {
+                Ok(vault_bal) if vault_bal.balance > 0 => {
+                    info!(address = %address, vault_balance = vault_bal.balance, "Using vault balance");
+                    (vault_bal, true)
+                }
+                _ => (regular, false),
+            }
         }
     };
 
@@ -495,10 +510,12 @@ async fn handle_analyze(state: &BotState, telegram_id: i64, arg: &str) -> Result
         .map(|l| format!(" ({l})"))
         .unwrap_or_default();
 
+    let vault_indicator = if is_vault { " (vault)" } else { "" };
+
     Ok(format!(
         "<b>Staking Analysis</b>\n\
          <code>{address}</code>{label}\n\n\
-         <b>Balance:</b> {} DIVI\n\
+         <b>Balance:</b> {} DIVI{vault_indicator}\n\
          <b>Total received:</b> {} DIVI\n\n\
          <b>Stakes (24h / 7d / 30d):</b> {stakes_24h} / {stakes_7d} / {stakes_30d}\n\
          <b>Avg stake amount:</b> {} DIVI\n\n\

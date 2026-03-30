@@ -114,22 +114,33 @@ impl StakeAnalyzer {
                 continue;
             }
 
-            // Fetch balance; skip if zero or on error
-            let balance = match self.rpc.get_address_balance(&watch.address).await {
-                Ok(b) => b,
-                Err(e) => {
-                    debug!(address = %watch.address, error = %e, "Could not fetch balance");
-                    continue;
+            // Fetch balance; try regular first, fall back to vault scan
+            let effective_balance = {
+                let regular = match self.rpc.get_address_balance(&watch.address).await {
+                    Ok(b) => b.balance,
+                    Err(e) => {
+                        debug!(address = %watch.address, error = %e, "Could not fetch balance");
+                        continue;
+                    }
+                };
+
+                if regular > 0 {
+                    regular
+                } else {
+                    // Try vault balance (only_vaults=true)
+                    match self.rpc.get_vault_balance(&watch.address).await {
+                        Ok(vb) if vb.balance > 0 => vb.balance,
+                        _ => {
+                            // No regular or vault balance; skip
+                            continue;
+                        }
+                    }
                 }
             };
 
-            if balance.balance <= 0 {
-                continue;
-            }
-
             // Compute expected interval
             let expected_secs = Self::compute_expected_interval(
-                balance.balance,
+                effective_balance,
                 self.config.network_staking_supply,
             );
             if expected_secs.is_infinite() {
@@ -171,7 +182,7 @@ impl StakeAnalyzer {
                 label,
                 expected_secs,
                 time_since_secs,
-                balance.balance,
+                effective_balance,
             );
 
             info!(
@@ -240,8 +251,57 @@ impl StakeAnalyzer {
         };
 
         if deltas.is_empty() {
-            info!(address, "No deltas found for backfill");
-            return Ok(());
+            // No regular deltas -- try vault deltas (only_vaults=true)
+            info!(address, "No regular deltas, trying vault deltas");
+            match rpc
+                .get_vault_deltas(address, Some(start_height), Some(current_height))
+                .await
+            {
+                Ok(vault_deltas) if !vault_deltas.is_empty() => {
+                    info!(address, count = vault_deltas.len(), "Found vault deltas");
+                    // Use vault deltas instead — fall through to the same processing
+                    // by reassigning deltas
+                    let mut positive: Vec<_> = vault_deltas.into_iter().filter(|d| d.satoshis > 0).collect();
+                    positive.sort_by(|a, b| b.height.cmp(&a.height));
+                    positive.truncate(20);
+
+                    let mut recorded = 0u32;
+                    for delta in &positive {
+                        if let Ok(tx) = rpc.get_raw_transaction(&delta.txid).await {
+                            let is_stake = tx.vin.first().map_or(false, |v| v.coinbase.is_some());
+                            if is_stake {
+                                let _ = crate::db::record_stake_event(
+                                    db,
+                                    address,
+                                    &delta.txid,
+                                    delta.height,
+                                    tx.blockhash.as_deref().unwrap_or(""),
+                                    delta.satoshis,
+                                    "stake",
+                                );
+                                recorded += 1;
+                                if recorded >= 10 { break; }
+                            }
+                        }
+                    }
+
+                    // Set last_stake_at from most recent positive delta
+                    if let Some(latest) = positive.first() {
+                        crate::db::update_last_stake(db, address, latest.height)?;
+                    }
+
+                    info!(address, recorded, "Vault backfill complete");
+                    return Ok(());
+                }
+                Ok(_) => {
+                    info!(address, "No vault deltas found either, skipping backfill");
+                    return Ok(());
+                }
+                Err(e) => {
+                    info!(address, error = %e, "Vault deltas not available, skipping backfill");
+                    return Ok(());
+                }
+            }
         }
 
         // Filter to positive deltas (credits) and take the most recent 20
@@ -343,6 +403,127 @@ impl StakeAnalyzer {
             recorded,
             latest_height = ?latest_height,
             "Backfill complete"
+        );
+
+        Ok(())
+    }
+
+    /// Backfill stake history for a vault-locked address by scanning recent
+    /// coinstake transactions for vault outputs containing the address.
+    ///
+    /// This is used when `get_address_deltas` returns empty (vault addresses
+    /// are invisible to the address index).
+    async fn backfill_vault_stakes(
+        rpc: &Arc<dyn RpcClient>,
+        db: &DbPool,
+        address: &str,
+        current_height: u64,
+    ) -> Result<()> {
+        // Scan more blocks for backfill than for balance (need historical data)
+        const VAULT_BACKFILL_DEPTH: u64 = 2000;
+        let start_height = current_height.saturating_sub(VAULT_BACKFILL_DEPTH);
+
+        let mut latest_height: Option<u64> = None;
+        let mut recorded = 0u32;
+
+        for height in (start_height..=current_height).rev() {
+            let hash = match rpc.get_block_hash(height).await {
+                Ok(h) => h,
+                Err(_) => continue,
+            };
+
+            let block = match rpc.get_block(&hash).await {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+
+            // Coinstake is tx[1]
+            let coinstake_txid = match block.tx.get(1) {
+                Some(txid) => txid,
+                None => continue,
+            };
+
+            let tx = match rpc.get_raw_transaction(coinstake_txid).await {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+
+            // Check each vout for a vault output containing our address
+            for vout in &tx.vout {
+                let is_vault = vout
+                    .script_pub_key
+                    .script_type
+                    .as_deref()
+                    == Some("vault");
+
+                if !is_vault {
+                    continue;
+                }
+
+                let contains_address = vout
+                    .script_pub_key
+                    .addresses
+                    .as_ref()
+                    .map_or(false, |addrs| addrs.iter().any(|a| a == address));
+
+                if !contains_address {
+                    continue;
+                }
+
+                let amount_satoshis = (vout.value * 100_000_000.0).round() as i64;
+
+                if recorded < 10 {
+                    match db::record_stake_event(
+                        db,
+                        address,
+                        &tx.txid,
+                        height,
+                        &hash,
+                        amount_satoshis,
+                        "stake",
+                    ) {
+                        Ok(true) => {
+                            recorded += 1;
+                            debug!(
+                                address,
+                                txid = %tx.txid,
+                                height,
+                                amount = %satoshi_to_divi(amount_satoshis),
+                                "Backfilled vault stake event"
+                            );
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            warn!(
+                                txid = %tx.txid,
+                                error = %e,
+                                "Failed to record backfilled vault stake"
+                            );
+                        }
+                    }
+                }
+
+                if latest_height.is_none() || Some(height) > latest_height {
+                    latest_height = Some(height);
+                }
+
+                // Only count the first matching vout per tx
+                break;
+            }
+        }
+
+        // Update last_stake_at to the most recent vault stake found
+        if let Some(height) = latest_height {
+            if let Err(e) = db::update_last_stake(db, address, height) {
+                warn!(address, error = %e, "Failed to update last_stake after vault backfill");
+            }
+        }
+
+        info!(
+            address,
+            recorded,
+            latest_height = ?latest_height,
+            "Vault backfill complete"
         );
 
         Ok(())
