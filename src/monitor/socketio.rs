@@ -123,9 +123,9 @@ impl BlockMonitor for SocketIoMonitor {
                     return;
                 }
 
-                // ZMQ delivers block hashes in little-endian byte order.
-                // Reverse to get the standard big-endian display format.
-                let block_hash = reverse_hex(&event.data);
+                // The services.divi.domains ZMQ relay already reverses the
+                // hash to RPC-compatible big-endian format. Use as-is.
+                let block_hash = event.data.clone();
 
                 info!(
                     block_hash = %block_hash,

@@ -265,24 +265,22 @@ impl StakeAnalyzer {
                     positive.sort_by(|a, b| b.height.cmp(&a.height));
                     positive.truncate(20);
 
+                    // Every positive vault delta IS a staking event — vault UTXOs
+                    // are only created by coinstake transactions (staking rewards).
+                    // No need to check for coinbase; just record them directly.
                     let mut recorded = 0u32;
                     for delta in &positive {
-                        if let Ok(tx) = rpc.get_raw_transaction(&delta.txid).await {
-                            let is_stake = tx.vin.first().map_or(false, |v| v.coinbase.is_some());
-                            if is_stake {
-                                let _ = crate::db::record_stake_event(
-                                    db,
-                                    address,
-                                    &delta.txid,
-                                    delta.height,
-                                    tx.blockhash.as_deref().unwrap_or(""),
-                                    delta.satoshis,
-                                    "stake",
-                                );
-                                recorded += 1;
-                                if recorded >= 10 { break; }
-                            }
-                        }
+                        let _ = crate::db::record_stake_event(
+                            db,
+                            address,
+                            &delta.txid,
+                            delta.height,
+                            "",  // block hash not available from deltas
+                            delta.satoshis,
+                            "stake",
+                        );
+                        recorded += 1;
+                        if recorded >= 10 { break; }
                     }
 
                     // Set last_stake_at from most recent positive delta

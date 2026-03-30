@@ -54,8 +54,20 @@ impl BlockProcessor {
     /// Process a single block: fetch data, check for stake rewards to watched
     /// addresses, detect lottery winners, and run anomaly analysis.
     async fn process_block(&self, hash: &str) -> anyhow::Result<()> {
-        // 1. Fetch the block
-        let block = self.rpc.get_block(hash).await?;
+        // 1. Fetch the block (with retry — ZMQ event may arrive before the
+        //    block is fully indexed by the RPC node)
+        let mut block = None;
+        for attempt in 0..3 {
+            match self.rpc.get_block(hash).await {
+                Ok(b) => { block = Some(b); break; }
+                Err(e) if attempt < 2 => {
+                    tracing::debug!(hash, attempt, error = %e, "Block not ready, retrying...");
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500 * (attempt + 1) as u64)).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        let block = block.unwrap();
 
         info!(
             height = block.height,
