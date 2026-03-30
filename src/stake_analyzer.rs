@@ -297,7 +297,6 @@ impl StakeAnalyzer {
                     let mut latest_height: Option<u64> = None;
 
                     for (height, reward, txid) in &stake_blocks {
-                        if recorded >= 100 { break; }
 
                         match crate::db::record_stake_event(
                             db,
