@@ -435,21 +435,27 @@ async fn handle_analyze(state: &BotState, telegram_id: i64, arg: &str) -> Result
 
     // Get recent stakes from DB
     let stakes = db::get_recent_stakes(&state.db, &address, 1000)?;
-    let now = chrono::Utc::now().naive_utc();
+    let current_height = state.rpc.get_block_count().await.unwrap_or(0);
+
+    // Use block height to determine when stakes happened (not detected_at
+    // which is just the DB insertion time). Divi blocks are ~60 seconds apart.
+    let blocks_24h = 24 * 60;       // ~1,440 blocks
+    let blocks_7d = 7 * 24 * 60;    // ~10,080 blocks
+    let blocks_30d = 30 * 24 * 60;  // ~43,200 blocks
 
     let stakes_24h = stakes
         .iter()
-        .filter(|s| (now - s.detected_at).num_hours() < 24)
+        .filter(|s| current_height.saturating_sub(s.block_height) < blocks_24h)
         .count();
 
     let stakes_7d = stakes
         .iter()
-        .filter(|s| (now - s.detected_at).num_days() < 7)
+        .filter(|s| current_height.saturating_sub(s.block_height) < blocks_7d)
         .count();
 
     let stakes_30d = stakes
         .iter()
-        .filter(|s| (now - s.detected_at).num_days() < 30)
+        .filter(|s| current_height.saturating_sub(s.block_height) < blocks_30d)
         .count();
 
     let avg_amount = if stakes.is_empty() {
@@ -470,13 +476,16 @@ async fn handle_analyze(state: &BotState, telegram_id: i64, arg: &str) -> Result
         .into_iter()
         .find(|w| w.address == address);
 
-    let last_stake_info = watch
-        .as_ref()
-        .and_then(|w| w.last_stake_at.as_ref())
-        .map(|ts| {
-            let elapsed = (now - *ts).num_seconds().max(0) as u64;
-            (time_ago(ts), elapsed)
-        });
+    // Derive "last stake" from the most recent stake event's block height
+    // rather than detected_at (which is insertion time, not block time).
+    let last_stake_info = if let Some(latest) = stakes.first() {
+        let blocks_ago = current_height.saturating_sub(latest.block_height);
+        let secs_ago = blocks_ago * 60; // ~60s per block
+        let ago_str = format_duration(secs_ago);
+        Some((format!("{ago_str} ago"), secs_ago))
+    } else {
+        None
+    };
 
     // Determine health status
     let health = match &last_stake_info {
