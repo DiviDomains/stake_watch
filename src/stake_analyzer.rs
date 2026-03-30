@@ -232,9 +232,9 @@ impl StakeAnalyzer {
 
         // Get current block height
         let current_height = rpc.get_block_count().await?;
-        let start_height = current_height.saturating_sub(10_000);
+        let start_height = current_height.saturating_sub(50_000);
 
-        // Fetch address deltas for the last ~10,000 blocks.
+        // Fetch address deltas for the last ~50,000 blocks (~35 days).
         let deltas = match rpc
             .get_address_deltas(address, Some(start_height), Some(current_height))
             .await
@@ -259,33 +259,83 @@ impl StakeAnalyzer {
             {
                 Ok(vault_deltas) if !vault_deltas.is_empty() => {
                     info!(address, count = vault_deltas.len(), "Found vault deltas");
-                    // Use vault deltas instead — fall through to the same processing
-                    // by reassigning deltas
-                    let mut positive: Vec<_> = vault_deltas.into_iter().filter(|d| d.satoshis > 0).collect();
-                    positive.sort_by(|a, b| b.height.cmp(&a.height));
-                    positive.truncate(20);
 
-                    // Every positive vault delta IS a staking event — vault UTXOs
-                    // are only created by coinstake transactions (staking rewards).
-                    // No need to check for coinbase; just record them directly.
-                    let mut recorded = 0u32;
-                    for delta in &positive {
-                        let _ = crate::db::record_stake_event(
-                            db,
-                            address,
-                            &delta.txid,
-                            delta.height,
-                            "",  // block hash not available from deltas
-                            delta.satoshis,
-                            "stake",
-                        );
-                        recorded += 1;
-                        if recorded >= 10 { break; }
+                    // Group ALL deltas (positive and negative) by block height.
+                    // When a vault UTXO stakes, the old UTXO is spent (negative delta)
+                    // and a new one is created (positive delta). The reward is the net
+                    // difference: sum_positive + sum_negative (negatives already negative).
+                    let mut by_height: std::collections::BTreeMap<u64, Vec<i64>> =
+                        std::collections::BTreeMap::new();
+                    for d in &vault_deltas {
+                        by_height.entry(d.height).or_default().push(d.satoshis);
                     }
 
-                    // Set last_stake_at from most recent positive delta
-                    if let Some(latest) = positive.first() {
-                        crate::db::update_last_stake(db, address, latest.height)?;
+                    // Collect staking events sorted by height descending (most recent first).
+                    // Skip blocks where the net delta equals the total positive (initial deposit).
+                    let mut stake_blocks: Vec<(u64, i64, String)> = Vec::new();
+                    for (&height, sats) in by_height.iter().rev() {
+                        let net: i64 = sats.iter().sum();
+                        let has_negative = sats.iter().any(|&s| s < 0);
+
+                        // If there are no negative deltas, this is an initial vault deposit,
+                        // not a staking reward — skip it.
+                        if !has_negative || net <= 0 {
+                            continue;
+                        }
+
+                        // Find the txid of the positive delta in this block for the event record
+                        let txid = vault_deltas
+                            .iter()
+                            .find(|d| d.height == height && d.satoshis > 0)
+                            .map(|d| d.txid.clone())
+                            .unwrap_or_default();
+
+                        stake_blocks.push((height, net, txid));
+                    }
+
+                    let mut recorded = 0u32;
+                    let mut latest_height: Option<u64> = None;
+
+                    for (height, reward, txid) in &stake_blocks {
+                        if recorded >= 100 { break; }
+
+                        match crate::db::record_stake_event(
+                            db,
+                            address,
+                            txid,
+                            *height,
+                            "",  // block hash not available from deltas
+                            *reward,
+                            "stake",
+                        ) {
+                            Ok(true) => {
+                                recorded += 1;
+                                debug!(
+                                    address,
+                                    txid = %txid,
+                                    height,
+                                    reward = %satoshi_to_divi(*reward),
+                                    "Backfilled vault stake reward"
+                                );
+                            }
+                            Ok(false) => {} // duplicate
+                            Err(e) => {
+                                warn!(
+                                    txid = %txid,
+                                    error = %e,
+                                    "Failed to record backfilled vault stake"
+                                );
+                            }
+                        }
+
+                        if latest_height.is_none() || Some(*height) > latest_height {
+                            latest_height = Some(*height);
+                        }
+                    }
+
+                    // Set last_stake_at from most recent stake
+                    if let Some(height) = latest_height {
+                        crate::db::update_last_stake(db, address, height)?;
                     }
 
                     info!(address, recorded, "Vault backfill complete");
@@ -310,7 +360,6 @@ impl StakeAnalyzer {
 
         // Sort by height descending so we process most recent first
         positive_deltas.sort_by(|a, b| b.height.cmp(&a.height));
-        positive_deltas.truncate(20);
 
         let mut latest_height: Option<u64> = None;
         let mut recorded = 0u32;
@@ -349,8 +398,8 @@ impl StakeAnalyzer {
                 },
             };
 
-            // Record up to 10 stake events
-            if recorded < 10 {
+            // Record up to 100 stake events
+            if recorded < 100 {
                 match db::record_stake_event(
                     db,
                     address,

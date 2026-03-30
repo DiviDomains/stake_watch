@@ -387,6 +387,17 @@ pub fn update_last_stake(
     Ok(())
 }
 
+/// Sum all recorded stake reward amounts for an address.
+pub fn sum_stake_rewards(db: &DbPool, address: &str) -> Result<i64> {
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
+    let total: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(amount_satoshis), 0) FROM stake_events WHERE address = ?1",
+        params![address],
+        |row| row.get(0),
+    )?;
+    Ok(total)
+}
+
 /// Update last_alert_at for ALL watchers of the given address.
 pub fn update_last_alert(db: &DbPool, address: &str) -> Result<()> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;

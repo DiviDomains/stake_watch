@@ -512,18 +512,32 @@ async fn handle_analyze(state: &BotState, telegram_id: i64, arg: &str) -> Result
 
     let vault_indicator = if is_vault { " (vault)" } else { "" };
 
+    // For vault addresses, show "Total rewards earned" from DB instead of
+    // "Total received" which is inflated by recycled UTXO values.
+    let received_line = if is_vault {
+        let total_rewards = db::sum_stake_rewards(&state.db, &address).unwrap_or(0);
+        format!(
+            "<b>Total rewards earned:</b> {} DIVI",
+            satoshi_to_divi(total_rewards)
+        )
+    } else {
+        format!(
+            "<b>Total received:</b> {} DIVI",
+            satoshi_to_divi(balance.received)
+        )
+    };
+
     Ok(format!(
         "<b>Staking Analysis</b>\n\
          <code>{address}</code>{label}\n\n\
          <b>Balance:</b> {} DIVI{vault_indicator}\n\
-         <b>Total received:</b> {} DIVI\n\n\
+         {received_line}\n\n\
          <b>Stakes (24h / 7d / 30d):</b> {stakes_24h} / {stakes_7d} / {stakes_30d}\n\
          <b>Avg stake amount:</b> {} DIVI\n\n\
          <b>Expected frequency:</b> {expected_str}\n\
          <b>Last stake:</b> {last_stake_str}\n\
          <b>Health:</b> {health}",
         satoshi_to_divi(balance.balance),
-        satoshi_to_divi(balance.received),
         satoshi_to_divi(avg_amount),
     ))
 }
