@@ -343,15 +343,21 @@ export async function renderTxDetail(container, txid) {
                     || [];
                 const value = vout.value != null ? formatDiviFloat(vout.value) : '0.00000000';
 
+                // For PoS coinbase empty outputs (value=0, nonstandard), show a cleaner label
+                const isEmptyOutput = (vout.value === 0 || vout.value === 0.0) && addresses.length === 0;
+                const outputLabel = addresses.length > 0
+                    ? addresses.map(a => addressLink(a)).join('<br>')
+                    : isEmptyOutput
+                        ? '<span class="text-hint text-sm">PoS Coinbase Marker (empty)</span>'
+                        : `<span class="text-hint text-sm">${scriptType || 'No address'}</span>`;
+
                 html += `
                     <div class="tx-io-row">
                         <div class="tx-io-address">
-                            ${addresses.length > 0
-                                ? addresses.map(a => addressLink(a)).join('<br>')
-                                : `<span class="text-hint text-sm">${scriptType || 'No address'}</span>`}
+                            ${outputLabel}
                             ${isVault ? '<span class="vault-badge" style="margin-left: 4px;">Vault</span>' : ''}
                         </div>
-                        <div class="tx-io-value positive">${value}</div>
+                        <div class="tx-io-value positive">${isEmptyOutput ? '' : value}</div>
                     </div>`;
             }
         } else {
