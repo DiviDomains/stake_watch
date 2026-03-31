@@ -1118,20 +1118,37 @@ async fn get_address(
         _ => None,
     };
 
-    // Fetch recent deltas (best-effort)
-    let recent_deltas = match state.rpc.get_address_deltas(&address, None, None).await {
-        Ok(deltas) => deltas
-            .into_iter()
-            .rev()
-            .take(20)
-            .map(|d| DeltaInfo {
-                txid: d.txid,
-                height: d.height,
-                amount_divi: utils::satoshi_to_divi(d.satoshis),
-            })
-            .collect(),
-        Err(_) => Vec::new(),
-    };
+    // Fetch recent deltas — try regular first, fall back to vault deltas
+    let mut recent_deltas: Vec<DeltaInfo> =
+        match state.rpc.get_address_deltas(&address, None, None).await {
+            Ok(deltas) => deltas
+                .into_iter()
+                .rev()
+                .take(50)
+                .map(|d| DeltaInfo {
+                    txid: d.txid,
+                    height: d.height,
+                    amount_divi: utils::satoshi_to_divi(d.satoshis),
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+
+    // If no regular deltas, try vault deltas (only_vaults=true)
+    if recent_deltas.is_empty() {
+        if let Ok(vault_deltas) = state.rpc.get_vault_deltas(&address, None, None).await {
+            recent_deltas = vault_deltas
+                .into_iter()
+                .rev()
+                .take(50)
+                .map(|d| DeltaInfo {
+                    txid: d.txid,
+                    height: d.height,
+                    amount_divi: utils::satoshi_to_divi(d.satoshis),
+                })
+                .collect();
+        }
+    }
 
     Ok(Json(AddressInfo {
         address,
