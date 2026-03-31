@@ -76,6 +76,7 @@ const NORMAL_SCRIPT_TYPES: &[&str] = &[
 // ---------------------------------------------------------------------------
 
 /// Detected anomaly with enough context to notify subscribers.
+#[allow(dead_code)]
 struct Anomaly {
     alert_type: &'static str,
     description: String,
@@ -168,9 +169,7 @@ impl AlertAnalyzer {
 
                 // Unusual script type detection
                 if let Some(ref script_type) = vout.script_pub_key.script_type {
-                    let is_normal = NORMAL_SCRIPT_TYPES
-                        .iter()
-                        .any(|&t| t == script_type.as_str());
+                    let is_normal = NORMAL_SCRIPT_TYPES.contains(&script_type.as_str());
                     if !is_normal {
                         anomalies.push(Anomaly {
                             alert_type: ALERT_UNUSUAL_SCRIPT,

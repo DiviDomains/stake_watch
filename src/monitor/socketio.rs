@@ -10,7 +10,6 @@ use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 
 use crate::config::SocketIoConfig;
-use crate::utils::reverse_hex;
 
 use super::BlockMonitor;
 

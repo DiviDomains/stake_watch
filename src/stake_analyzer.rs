@@ -386,15 +386,17 @@ impl StakeAnalyzer {
                 }
             };
 
-            // In Divi, staking rewards come from coinbase/coinstake transactions.
-            // Check if the first vin has a coinbase field or no txid (coinstake).
-            let is_coinbase_or_coinstake = tx
-                .vin
-                .first()
-                .map_or(false, |v| v.coinbase.is_some() || v.txid.is_none());
-
-            if !is_coinbase_or_coinstake {
-                continue;
+            // For Treasury/Charity addresses, all positive deltas are payment events.
+            // For staking addresses, check if it's a coinbase/coinstake transaction.
+            let is_payment_address = address == TREASURY_ADDRESS || address == CHARITY_ADDRESS;
+            if !is_payment_address {
+                let is_coinbase_or_coinstake = tx
+                    .vin
+                    .first()
+                    .is_some_and(|v| v.coinbase.is_some() || v.txid.is_none());
+                if !is_coinbase_or_coinstake {
+                    continue;
+                }
             }
 
             // Determine the block hash from the transaction
@@ -470,6 +472,7 @@ impl StakeAnalyzer {
     ///
     /// This is used when `get_address_deltas` returns empty (vault addresses
     /// are invisible to the address index).
+    #[allow(dead_code)]
     async fn backfill_vault_stakes(
         rpc: &Arc<dyn RpcClient>,
         db: &DbPool,
@@ -517,7 +520,7 @@ impl StakeAnalyzer {
                     .script_pub_key
                     .addresses
                     .as_ref()
-                    .map_or(false, |addrs| addrs.iter().any(|a| a == address));
+                    .is_some_and(|addrs| addrs.iter().any(|a| a == address));
 
                 if !contains_address {
                     continue;

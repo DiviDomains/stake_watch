@@ -481,7 +481,7 @@ pub fn create_rpc_client(config: &BackendConfig, secrets: &Secrets) -> Box<dyn R
             secrets.chainz_api_key.clone(),
         ))
     } else {
-        let (user, pass) = if config.rpc_auth.as_ref().map_or(false, |a| a.enabled) {
+        let (user, pass) = if config.rpc_auth.as_ref().is_some_and(|a| a.enabled) {
             (secrets.rpc_username.clone(), secrets.rpc_password.clone())
         } else {
             (None, None)

@@ -240,6 +240,7 @@ struct BlockDetail {
 }
 
 #[derive(Serialize)]
+#[allow(dead_code)]
 struct TxSummary {
     txid: String,
     vin_count: usize,
@@ -408,7 +409,7 @@ async fn get_watches(
             _ => None,
         };
 
-        let last_stake_ago = w.last_stake_at.as_ref().map(|ts| utils::time_ago(ts));
+        let last_stake_ago = w.last_stake_at.as_ref().map(utils::time_ago);
 
         result.push(WatchResponse {
             address: w.address.clone(),
@@ -783,7 +784,7 @@ async fn get_analysis(
         last_stake: last_stake_str.clone(),
         last_stake_time: last_stake_info
             .as_ref()
-            .map(|(_, secs)| (chrono::Utc::now().timestamp() - *secs as i64)),
+            .map(|(_, secs)| chrono::Utc::now().timestamp() - *secs as i64),
         last_stake_secs_ago: last_stake_info.as_ref().map(|(_, secs)| *secs),
         health,
         current_height,

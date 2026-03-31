@@ -213,7 +213,7 @@ fn ensure_user_registered(state: &BotState, telegram_id: i64, username: Option<&
 }
 
 async fn handle_start(
-    state: &BotState,
+    _state: &BotState,
     telegram_id: i64,
     username: Option<&str>,
 ) -> Result<String> {
