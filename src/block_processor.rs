@@ -262,15 +262,36 @@ impl BlockProcessor {
         // the full recycled UTXO value.
         let amount_satoshis = if vout.script_pub_key.script_type.as_deref() == Some("vault") {
             let total_out: f64 = tx.vout.iter().map(|v| v.value).sum();
-            let total_in: f64 = tx.vin.iter().filter_map(|v| v.value).sum();
+            let mut total_in: f64 = tx.vin.iter().filter_map(|v| v.value).sum();
+
+            // If vin values not available, fetch the previous tx to get the input value
+            if total_in == 0.0 {
+                for vin in &tx.vin {
+                    if let Some(prev_txid) = &vin.txid {
+                        if let Ok(prev_tx) = self.rpc.get_raw_transaction(prev_txid).await {
+                            let prev_vout_idx = vin.vout.unwrap_or(0) as usize;
+                            if let Some(prev_vout) = prev_tx.vout.get(prev_vout_idx) {
+                                total_in += prev_vout.value;
+                            }
+                        }
+                    }
+                }
+            }
+
             let reward_sats = (total_out * 100_000_000.0).round() as i64
                 - (total_in * 100_000_000.0).round() as i64;
-            // Sanity-check: reward should be positive and reasonable.
-            // Fall back to vout.value if the computation looks wrong
-            // (e.g. vin values not available in this RPC backend).
-            if reward_sats > 0 {
+            // Sanity-check: reward should be positive and reasonable (< 10000 DIVI).
+            if reward_sats > 0 && reward_sats < 1_000_000_000_000 {
                 reward_sats
             } else {
+                // Something went wrong — log and fall back to standard reward
+                tracing::warn!(
+                    txid = %tx.txid,
+                    total_out,
+                    total_in,
+                    reward_sats,
+                    "Vault reward calculation looks wrong, using vout value"
+                );
                 (vout.value * 100_000_000.0).round() as i64
             }
         } else {
