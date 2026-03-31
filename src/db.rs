@@ -22,6 +22,8 @@ pub struct WatchedAddress {
     pub last_stake_at: Option<NaiveDateTime>,
     pub last_stake_height: Option<u64>,
     pub last_alert_at: Option<NaiveDateTime>,
+    pub include_in_portfolio: bool,
+    pub sort_order: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -209,6 +211,27 @@ fn run_migrations(conn: &Connection) -> Result<()> {
         info!("Migration: added sort_order column to watched_addresses");
     }
 
+    // Migration: add include_in_portfolio column to watched_addresses
+    // Default 1 (true) for existing rows. Treasury/Charity get 0 at insert time.
+    let has_include_in_portfolio: bool = conn
+        .prepare("SELECT include_in_portfolio FROM watched_addresses LIMIT 0")
+        .is_ok();
+
+    if !has_include_in_portfolio {
+        conn.execute_batch(
+            "ALTER TABLE watched_addresses ADD COLUMN include_in_portfolio INTEGER NOT NULL DEFAULT 1;",
+        )?;
+        // Set existing Treasury/Charity watches to exclude from portfolio
+        conn.execute(
+            "UPDATE watched_addresses SET include_in_portfolio = 0 WHERE address IN (?1, ?2)",
+            params![
+                "DPhJsztbZafDc1YeyrRqSjmKjkmLJpQpUn",
+                "DPujt2XAdHyRcZNB5ySZBBVKjzY2uXZGYq"
+            ],
+        )?;
+        info!("Migration: added include_in_portfolio column to watched_addresses");
+    }
+
     Ok(())
 }
 
@@ -282,7 +305,7 @@ pub fn add_watch(
     address: &str,
     label: Option<&str>,
 ) -> Result<bool> {
-    add_watch_with_sort_order(db, telegram_id, address, label, 0)
+    add_watch_full(db, telegram_id, address, label, 0, true)
 }
 
 pub fn add_watch_with_sort_order(
@@ -292,10 +315,21 @@ pub fn add_watch_with_sort_order(
     label: Option<&str>,
     sort_order: i32,
 ) -> Result<bool> {
+    add_watch_full(db, telegram_id, address, label, sort_order, true)
+}
+
+pub fn add_watch_full(
+    db: &DbPool,
+    telegram_id: i64,
+    address: &str,
+    label: Option<&str>,
+    sort_order: i32,
+    include_in_portfolio: bool,
+) -> Result<bool> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
     let inserted = conn.execute(
-        "INSERT OR IGNORE INTO watched_addresses (telegram_id, address, label, sort_order) VALUES (?1, ?2, ?3, ?4)",
-        params![telegram_id, address, label, sort_order],
+        "INSERT OR IGNORE INTO watched_addresses (telegram_id, address, label, sort_order, include_in_portfolio) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![telegram_id, address, label, sort_order, include_in_portfolio as i32],
     )?;
     Ok(inserted > 0)
 }
@@ -312,7 +346,7 @@ pub fn remove_watch(db: &DbPool, telegram_id: i64, address: &str) -> Result<bool
 pub fn get_watches_for_user(db: &DbPool, telegram_id: i64) -> Result<Vec<WatchedAddress>> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
     let mut stmt = conn.prepare(
-        "SELECT id, telegram_id, address, label, added_at, last_stake_at, last_stake_height, last_alert_at
+        "SELECT id, telegram_id, address, label, added_at, last_stake_at, last_stake_height, last_alert_at, include_in_portfolio, sort_order
          FROM watched_addresses WHERE telegram_id = ?1 ORDER BY sort_order ASC, added_at DESC",
     )?;
     let rows = stmt
@@ -326,10 +360,40 @@ pub fn get_watches_for_user(db: &DbPool, telegram_id: i64) -> Result<Vec<Watched
                 last_stake_at: parse_dt_opt(row.get(5)?),
                 last_stake_height: row.get::<_, Option<i64>>(6)?.map(|v| v as u64),
                 last_alert_at: parse_dt_opt(row.get(7)?),
+                include_in_portfolio: row.get::<_, i32>(8).unwrap_or(1) != 0,
+                sort_order: row.get::<_, i32>(9).unwrap_or(0),
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+pub fn update_include_in_portfolio(
+    db: &DbPool,
+    telegram_id: i64,
+    address: &str,
+    include: bool,
+) -> Result<bool> {
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
+    let updated = conn.execute(
+        "UPDATE watched_addresses SET include_in_portfolio = ?1 WHERE telegram_id = ?2 AND address = ?3",
+        params![include as i32, telegram_id, address],
+    )?;
+    Ok(updated > 0)
+}
+
+pub fn update_sort_order(
+    db: &DbPool,
+    telegram_id: i64,
+    address: &str,
+    sort_order: i32,
+) -> Result<bool> {
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
+    let updated = conn.execute(
+        "UPDATE watched_addresses SET sort_order = ?1 WHERE telegram_id = ?2 AND address = ?3",
+        params![sort_order, telegram_id, address],
+    )?;
+    Ok(updated > 0)
 }
 
 pub fn get_all_watched_addresses(db: &DbPool) -> Result<HashSet<String>> {
@@ -380,7 +444,7 @@ pub fn get_stale_watches(db: &DbPool, stale_secs: u64) -> Result<Vec<WatchedAddr
     let cutoff_str = cutoff.format("%Y-%m-%d %H:%M:%S").to_string();
 
     let mut stmt = conn.prepare(
-        "SELECT id, telegram_id, address, label, added_at, last_stake_at, last_stake_height, last_alert_at
+        "SELECT id, telegram_id, address, label, added_at, last_stake_at, last_stake_height, last_alert_at, include_in_portfolio, sort_order
          FROM watched_addresses
          WHERE last_alert_at IS NULL OR last_alert_at < ?1",
     )?;
@@ -395,6 +459,8 @@ pub fn get_stale_watches(db: &DbPool, stale_secs: u64) -> Result<Vec<WatchedAddr
                 last_stake_at: parse_dt_opt(row.get(5)?),
                 last_stake_height: row.get::<_, Option<i64>>(6)?.map(|v| v as u64),
                 last_alert_at: parse_dt_opt(row.get(7)?),
+                include_in_portfolio: row.get::<_, i32>(8).unwrap_or(1) != 0,
+                sort_order: row.get::<_, i32>(9).unwrap_or(0),
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -667,7 +733,7 @@ pub fn count_fork_watchers(db: &DbPool) -> Result<u64> {
 pub fn get_all_watches(db: &DbPool) -> Result<Vec<WatchedAddress>> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
     let mut stmt = conn.prepare(
-        "SELECT id, telegram_id, address, label, added_at, last_stake_at, last_stake_height, last_alert_at
+        "SELECT id, telegram_id, address, label, added_at, last_stake_at, last_stake_height, last_alert_at, include_in_portfolio, sort_order
          FROM watched_addresses ORDER BY address",
     )?;
     let rows = stmt
@@ -681,6 +747,8 @@ pub fn get_all_watches(db: &DbPool) -> Result<Vec<WatchedAddress>> {
                 last_stake_at: parse_dt_opt(row.get(5)?),
                 last_stake_height: row.get::<_, Option<i64>>(6)?.map(|v| v as u64),
                 last_alert_at: parse_dt_opt(row.get(7)?),
+                include_in_portfolio: row.get::<_, i32>(8).unwrap_or(1) != 0,
+                sort_order: row.get::<_, i32>(9).unwrap_or(0),
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;

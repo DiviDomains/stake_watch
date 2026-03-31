@@ -2,8 +2,8 @@
 // Stake Watch -- Address Detail View
 // ============================================================
 // Full analysis of a watched address: balance, vault status,
-// health, expected frequency, Chart.js reward history, and
-// recent stakes table.
+// health, expected frequency, Chart.js reward history,
+// staking ROI calculator, and recent stakes table.
 // ============================================================
 
 import { api } from './api.js';
@@ -125,6 +125,72 @@ export async function renderAddressDetail(container, address) {
                 </div>`;
         }
 
+        // Staking Calculator
+        if (a && a.balance_satoshis > 0 && a.expected_interval_secs) {
+            const balanceDivi = a.balance_satoshis / 1e8;
+            const avgRewardDivi = (a.avg_stake_satoshis || 0) / 1e8;
+            const expectedSecs = a.expected_interval_secs;
+            // Stakes per year = seconds_per_year / expected_interval_secs
+            const stakesPerYear = (365.25 * 24 * 3600) / expectedSecs;
+            const annualRewards = stakesPerYear * avgRewardDivi;
+            const annualRor = balanceDivi > 0 ? (annualRewards / balanceDivi) : 0;
+
+            html += `
+                <div class="section-title card-stagger">Staking Calculator</div>
+                <div class="card card-stagger calculator-card"
+                     id="staking-calculator"
+                     data-balance="${balanceDivi}"
+                     data-annual-ror="${annualRor}"
+                     data-annual-rewards="${annualRewards}">
+                    <div class="calc-current">
+                        <div class="card-stats card-stats-3">
+                            <div>
+                                <div class="stat-value stat-value-sm">${formatDiviShort(a.balance_satoshis)}</div>
+                                <div class="stat-label">Balance</div>
+                            </div>
+                            <div>
+                                <div class="stat-value stat-value-sm text-accent" id="calc-ror">
+                                    ${(annualRor * 100).toFixed(1)}%
+                                </div>
+                                <div class="stat-label">Annual RoR</div>
+                            </div>
+                            <div>
+                                <div class="stat-value stat-value-sm" id="calc-usd-balance">--</div>
+                                <div class="stat-label">USD Value</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="divider"></div>
+                    <div class="calc-projection">
+                        <div class="calc-slider-row">
+                            <label class="form-label" for="calc-years-slider">Projection Period</label>
+                            <span class="calc-years-label" id="calc-years-label">5 years</span>
+                        </div>
+                        <input type="range" id="calc-years-slider"
+                               class="calc-slider"
+                               min="1" max="99" value="5"
+                               oninput="updateCalculator()" />
+                        <div class="calc-results">
+                            <div class="calc-result-row">
+                                <span class="calc-result-label">Future Balance</span>
+                                <span class="calc-result-value" id="calc-future-divi">--</span>
+                            </div>
+                            <div class="calc-result-row">
+                                <span class="calc-result-label">Future USD Value</span>
+                                <span class="calc-result-value" id="calc-future-usd">--</span>
+                            </div>
+                            <div class="calc-result-row">
+                                <span class="calc-result-label">Total Rewards Earned</span>
+                                <span class="calc-result-value text-success" id="calc-total-rewards">--</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="calc-price-note text-xs text-hint" id="calc-price-note">
+                        Fetching DIVI price...
+                    </div>
+                </div>`;
+        }
+
         // Recent stakes table
         html += `<div class="section-title card-stagger">Recent Stakes</div>`;
 
@@ -174,6 +240,11 @@ export async function renderAddressDetail(container, address) {
             }
         }
 
+        // Initialize calculator if present
+        if (document.getElementById('staking-calculator')) {
+            initCalculator();
+        }
+
     } catch (e) {
         container.innerHTML = `
             <div class="view-enter">
@@ -185,6 +256,93 @@ export async function renderAddressDetail(container, address) {
                 </button>
             </div>`;
     }
+}
+
+// ----- Calculator Logic -----
+
+let diviPriceUsd = null;
+
+async function initCalculator() {
+    // Fetch DIVI price
+    try {
+        const priceData = await api.getDiviPrice();
+        diviPriceUsd = priceData.usd || 0;
+        const noteEl = document.getElementById('calc-price-note');
+        if (noteEl) {
+            noteEl.textContent = diviPriceUsd > 0
+                ? `DIVI price: $${diviPriceUsd.toFixed(6)} USD (via CoinGecko)`
+                : 'DIVI price not available';
+        }
+    } catch {
+        diviPriceUsd = 0;
+        const noteEl = document.getElementById('calc-price-note');
+        if (noteEl) {
+            noteEl.textContent = 'Could not fetch DIVI price';
+        }
+    }
+
+    // Show current USD balance
+    updateCalculator();
+}
+
+window.updateCalculator = function() {
+    const calc = document.getElementById('staking-calculator');
+    if (!calc) return;
+
+    const balance = parseFloat(calc.dataset.balance) || 0;
+    const annualRor = parseFloat(calc.dataset.annualRor) || 0;
+    const slider = document.getElementById('calc-years-slider');
+    const years = parseInt(slider?.value || '5', 10);
+
+    // Update year label
+    const yearLabel = document.getElementById('calc-years-label');
+    if (yearLabel) {
+        yearLabel.textContent = years === 1 ? '1 year' : `${years} years`;
+    }
+
+    // Compound: futureBalance = balance * (1 + annualRor)^years
+    const futureBalance = balance * Math.pow(1 + annualRor, years);
+    const totalRewards = futureBalance - balance;
+
+    // Update DIVI values
+    const futureDiviEl = document.getElementById('calc-future-divi');
+    if (futureDiviEl) {
+        futureDiviEl.textContent = formatCompactNumber(futureBalance) + ' DIVI';
+    }
+
+    const totalRewardsEl = document.getElementById('calc-total-rewards');
+    if (totalRewardsEl) {
+        totalRewardsEl.textContent = '+' + formatCompactNumber(totalRewards) + ' DIVI';
+    }
+
+    // Update USD values if price available
+    const usdBalEl = document.getElementById('calc-usd-balance');
+    const futureUsdEl = document.getElementById('calc-future-usd');
+
+    if (diviPriceUsd && diviPriceUsd > 0) {
+        const currentUsd = balance * diviPriceUsd;
+        const futureUsd = futureBalance * diviPriceUsd;
+
+        if (usdBalEl) usdBalEl.textContent = '$' + formatCompactUsd(currentUsd);
+        if (futureUsdEl) futureUsdEl.textContent = '$' + formatCompactUsd(futureUsd);
+    } else {
+        if (usdBalEl) usdBalEl.textContent = '--';
+        if (futureUsdEl) futureUsdEl.textContent = '--';
+    }
+};
+
+function formatCompactNumber(num) {
+    if (num >= 1e9) return (num / 1e9).toFixed(2) + 'B';
+    if (num >= 1e6) return (num / 1e6).toFixed(2) + 'M';
+    if (num >= 1e4) return Math.round(num).toLocaleString('en-US');
+    return num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function formatCompactUsd(num) {
+    if (num >= 1e9) return (num / 1e9).toFixed(2) + 'B';
+    if (num >= 1e6) return (num / 1e6).toFixed(2) + 'M';
+    if (num >= 1e3) return Math.round(num).toLocaleString('en-US');
+    return num.toFixed(2);
 }
 
 // Global handler for unwatch button

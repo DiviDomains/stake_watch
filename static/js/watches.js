@@ -2,7 +2,8 @@
 // Stake Watch -- Watches Management View
 // ============================================================
 // List watched addresses with health indicators, labels,
-// delete functionality, and an add-watch form.
+// delete functionality, reorder buttons, portfolio toggle,
+// and an add-watch form.
 // ============================================================
 
 import { api } from './api.js';
@@ -33,10 +34,37 @@ export async function renderWatches(container) {
                     <p>Add a Divi address below to start monitoring its staking activity.</p>
                 </div>`;
         } else {
-            for (const watch of watches) {
+            html += `<div id="watch-list">`;
+            for (let i = 0; i < watches.length; i++) {
+                const watch = watches[i];
                 const label = watch.label ? escapeHtml(watch.label) : 'Unnamed';
+                const isFirst = i === 0;
+                const isLast = i === watches.length - 1;
+                const portfolioChecked = watch.include_in_portfolio ? 'checked' : '';
+                const portfolioTitle = watch.include_in_portfolio
+                    ? 'Included in portfolio totals'
+                    : 'Excluded from portfolio totals';
+
                 html += `
-                    <div class="list-item card-stagger">
+                    <div class="list-item card-stagger" data-address="${escapeHtml(watch.address)}">
+                        <div class="list-item-reorder">
+                            <button class="btn btn-icon btn-ghost btn-reorder"
+                                    onclick="moveWatchUp('${escapeHtml(watch.address)}')"
+                                    title="Move up"
+                                    ${isFirst ? 'disabled' : ''}>
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="18 15 12 9 6 15"/>
+                                </svg>
+                            </button>
+                            <button class="btn btn-icon btn-ghost btn-reorder"
+                                    onclick="moveWatchDown('${escapeHtml(watch.address)}')"
+                                    title="Move down"
+                                    ${isLast ? 'disabled' : ''}>
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="6 9 12 15 18 9"/>
+                                </svg>
+                            </button>
+                        </div>
                         <div class="list-item-content"
                              onclick="navigate('address-detail', { address: '${escapeHtml(watch.address)}' })"
                              style="cursor: pointer;">
@@ -46,6 +74,17 @@ export async function renderWatches(container) {
                             </div>
                         </div>
                         <div class="list-item-actions">
+                            <label class="portfolio-toggle" title="${portfolioTitle}">
+                                <input type="checkbox" ${portfolioChecked}
+                                       onchange="togglePortfolio('${escapeHtml(watch.address)}', this.checked)" />
+                                <span class="portfolio-toggle-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                                        <path d="M2 17l10 5 10-5"/>
+                                        <path d="M2 12l10 5 10-5"/>
+                                    </svg>
+                                </span>
+                            </label>
                             <button class="btn btn-icon btn-danger"
                                     onclick="removeWatchFromList('${escapeHtml(watch.address)}')"
                                     title="Remove">
@@ -60,6 +99,7 @@ export async function renderWatches(container) {
                         </div>
                     </div>`;
             }
+            html += `</div>`;
         }
 
         // Add watch form
@@ -162,3 +202,49 @@ window.removeWatchFromList = async function(address) {
         window.showToast('Failed to remove: ' + e.message, 'error');
     }
 };
+
+window.togglePortfolio = async function(address, include) {
+    try {
+        await api.patchWatch(address, { include_in_portfolio: include });
+        window.haptic('light');
+        window.showToast(include ? 'Included in portfolio' : 'Excluded from portfolio');
+    } catch (e) {
+        window.haptic('error');
+        window.showToast('Failed to update: ' + e.message, 'error');
+        // Revert checkbox
+        navigate('watches');
+    }
+};
+
+window.moveWatchUp = async function(address) {
+    await reorderWatch(address, -1);
+};
+
+window.moveWatchDown = async function(address) {
+    await reorderWatch(address, 1);
+};
+
+async function reorderWatch(address, direction) {
+    const list = document.getElementById('watch-list');
+    if (!list) return;
+
+    const items = Array.from(list.querySelectorAll('.list-item[data-address]'));
+    const addresses = items.map(el => el.dataset.address);
+    const idx = addresses.indexOf(address);
+
+    if (idx < 0) return;
+    const newIdx = idx + direction;
+    if (newIdx < 0 || newIdx >= addresses.length) return;
+
+    // Swap
+    [addresses[idx], addresses[newIdx]] = [addresses[newIdx], addresses[idx]];
+
+    try {
+        await api.reorderWatches(addresses);
+        window.haptic('light');
+        navigate('watches');
+    } catch (e) {
+        window.haptic('error');
+        window.showToast('Failed to reorder: ' + e.message, 'error');
+    }
+}

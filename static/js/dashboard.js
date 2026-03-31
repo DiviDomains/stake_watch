@@ -41,15 +41,17 @@ export async function renderDashboard(container) {
             return { ...watch, analysis };
         });
 
-        // Compute portfolio aggregates
+        // Compute portfolio aggregates (only include watches with include_in_portfolio)
         let totalBalance = 0;
         let todayRewards = 0;
         let activeCount = 0;
 
         for (const item of enriched) {
             if (item.analysis) {
-                totalBalance += item.analysis.balance_satoshis || 0;
-                todayRewards += item.analysis.rewards_24h_satoshis || 0;
+                if (item.include_in_portfolio) {
+                    totalBalance += item.analysis.balance_satoshis || 0;
+                    todayRewards += item.analysis.rewards_24h_satoshis || 0;
+                }
                 if (item.analysis.health !== 'nodata') {
                     activeCount++;
                 }
@@ -110,6 +112,10 @@ export async function renderDashboard(container) {
             const lastLabel = isTreasuryOrCharity ? 'Last Payment' : 'Last Stake';
             const lastStake = a?.last_stake_time ? timeAgo(a.last_stake_time) : 'Never';
 
+            const portfolioBadge = item.include_in_portfolio
+                ? ''
+                : '<span class="portfolio-excluded-badge" title="Excluded from portfolio">Excl</span>';
+
             html += `
                 <div class="card card-clickable card-stagger ${healthClass}"
                      onclick="navigate('address-detail', { address: '${escapeHtml(item.address)}' })">
@@ -118,6 +124,7 @@ export async function renderDashboard(container) {
                             <span class="health-dot"></span>
                             ${label}
                             ${isVault ? '<span class="vault-badge">Vault</span>' : ''}
+                            ${portfolioBadge}
                         </div>
                         <span class="health-label">${healthText}</span>
                     </div>

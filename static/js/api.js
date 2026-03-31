@@ -51,6 +51,16 @@ export const api = {
         method: 'DELETE',
     }),
 
+    patchWatch: (address, data) => fetchApi(`/watches/${encodeURIComponent(address)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+    }),
+
+    reorderWatches: (addresses) => fetchApi('/watches/reorder', {
+        method: 'POST',
+        body: JSON.stringify({ addresses }),
+    }),
+
     getAnalysis: (address) => fetchApi(`/watches/${encodeURIComponent(address)}/analysis`),
 
     getStakes: (address, limit = 50) =>
@@ -85,4 +95,6 @@ export const api = {
     search: (query) => fetchApi(`/search?q=${encodeURIComponent(query)}`),
 
     getNetwork: () => fetchApi('/network'),
+
+    getDiviPrice: () => fetchApi('/price/divi'),
 };

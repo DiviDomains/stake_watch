@@ -1230,3 +1230,191 @@ a:active {
 .gap-sm { gap: var(--space-sm); }
 .gap-md { gap: var(--space-md); }
 .hidden { display: none !important; }
+
+
+/* ----- Portfolio Excluded Badge ----- */
+
+.portfolio-excluded-badge {
+    display: inline-flex;
+    align-items: center;
+    background: var(--nodata-dim);
+    color: var(--nodata);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 1px 5px;
+    border-radius: 3px;
+    border: 1px solid color-mix(in srgb, var(--nodata) 20%, transparent);
+    vertical-align: middle;
+    flex-shrink: 0;
+}
+
+
+/* ----- Watch List Reorder Buttons ----- */
+
+.list-item-reorder {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex-shrink: 0;
+    align-self: center;
+}
+
+.btn-reorder {
+    width: 28px;
+    height: 24px;
+    padding: 0;
+    border-radius: 4px;
+}
+
+.btn-reorder svg {
+    width: 14px;
+    height: 14px;
+}
+
+.btn-reorder:disabled {
+    opacity: 0.2;
+}
+
+
+/* ----- Portfolio Toggle ----- */
+
+.portfolio-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-sm);
+    transition: background var(--duration) var(--ease-out);
+    flex-shrink: 0;
+    margin-right: var(--space-xs);
+}
+
+.portfolio-toggle:active {
+    background: var(--surface-2);
+}
+
+.portfolio-toggle input {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+}
+
+.portfolio-toggle-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    color: var(--nodata);
+    transition: color var(--duration) var(--ease-out);
+}
+
+.portfolio-toggle-icon svg {
+    width: 16px;
+    height: 16px;
+}
+
+.portfolio-toggle input:checked + .portfolio-toggle-icon {
+    color: var(--accent);
+}
+
+
+/* ----- Staking Calculator ----- */
+
+.calculator-card {
+    padding: var(--space-lg);
+}
+
+.calc-current {
+    margin-bottom: 0;
+}
+
+.calc-slider-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--space-sm);
+}
+
+.calc-years-label {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--accent);
+}
+
+.calc-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--border-strong);
+    outline: none;
+    margin-bottom: var(--space-lg);
+}
+
+.calc-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid var(--bg);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.calc-slider::-moz-range-thumb {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid var(--bg);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.calc-results {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+}
+
+.calc-result-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--space-sm) 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.calc-result-row:last-child {
+    border-bottom: none;
+}
+
+.calc-result-label {
+    font-size: 13px;
+    color: var(--hint);
+}
+
+.calc-result-value {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    text-align: right;
+}
+
+.calc-price-note {
+    margin-top: var(--space-md);
+    text-align: center;
+}

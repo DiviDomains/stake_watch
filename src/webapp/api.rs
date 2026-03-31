@@ -5,7 +5,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         Json,
     },
-    routing::{delete, get},
+    routing::{delete, get, post},
     Router,
 };
 use futures_util::stream::Stream;
@@ -28,13 +28,19 @@ pub fn router(state: Arc<WebAppState>) -> Router {
         // Authenticated user endpoints
         .route("/me", get(get_me))
         .route("/watches", get(get_watches).post(add_watch))
-        .route("/watches/{address}", delete(remove_watch))
+        .route("/watches/reorder", post(reorder_watches))
+        .route(
+            "/watches/{address}",
+            delete(remove_watch).patch(patch_watch),
+        )
         .route("/watches/{address}/analysis", get(get_analysis))
         .route("/watches/{address}/stakes", get(get_stakes))
         .route("/alerts", get(get_alerts).post(add_alert))
         .route("/alerts/{alert_type}", delete(remove_alert))
         // Admin endpoints
         .route("/admin/users", get(get_admin_users))
+        // Public endpoints
+        .route("/price/divi", get(get_divi_price))
         // Public explorer endpoints
         .route("/blocks", get(get_blocks))
         .route("/blocks/{hash}", get(get_block))
@@ -70,8 +76,14 @@ fn get_telegram_user(headers: &HeaderMap, state: &WebAppState) -> Option<auth::T
     if let Ok(count) = db::get_watch_count_for_user(&state.db, user.id) {
         if count == 0 {
             for (address, label) in DEFAULT_WATCHES {
-                let _ =
-                    db::add_watch_with_sort_order(&state.db, user.id, address, Some(label), 1000);
+                let _ = db::add_watch_full(
+                    &state.db,
+                    user.id,
+                    address,
+                    Some(label),
+                    1000,
+                    false, // Treasury/Charity excluded from portfolio by default
+                );
             }
         }
     }
@@ -133,6 +145,8 @@ struct WatchResponse {
     last_stake_ago: Option<String>,
     balance_divi: Option<String>,
     vault_balance_divi: Option<String>,
+    include_in_portfolio: bool,
+    sort_order: i32,
 }
 
 #[derive(Deserialize)]
@@ -163,11 +177,13 @@ struct AnalysisResponse {
     balance_satoshis: i64,
     is_vault: bool,
     total_received_divi: String,
+    total_rewards_satoshis: i64,
     stakes_24h: usize,
     stakes_7d: usize,
     stakes_30d: usize,
     rewards_24h_satoshis: i64,
     avg_stake_divi: String,
+    avg_stake_satoshis: i64,
     expected_frequency: String,
     expected_frequency_secs: Option<f64>,
     expected_interval_secs: Option<f64>,
@@ -304,6 +320,23 @@ struct SuccessResponse {
     message: String,
 }
 
+#[derive(Deserialize)]
+struct PatchWatchRequest {
+    include_in_portfolio: Option<bool>,
+    sort_order: Option<i32>,
+}
+
+#[derive(Deserialize)]
+struct ReorderRequest {
+    addresses: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct PriceResponse {
+    usd: f64,
+    last_updated: String,
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/me
 // ---------------------------------------------------------------------------
@@ -385,6 +418,8 @@ async fn get_watches(
             last_stake_ago,
             balance_divi,
             vault_balance_divi,
+            include_in_portfolio: w.include_in_portfolio,
+            sort_order: w.sort_order,
         });
     }
 
@@ -490,6 +525,110 @@ async fn remove_watch(
 }
 
 // ---------------------------------------------------------------------------
+// PATCH /api/watches/:address
+// ---------------------------------------------------------------------------
+
+async fn patch_watch(
+    State(state): State<Arc<WebAppState>>,
+    headers: HeaderMap,
+    Path(address): Path<String>,
+    Json(body): Json<PatchWatchRequest>,
+) -> Result<Json<SuccessResponse>, (StatusCode, Json<ApiError>)> {
+    let user = get_telegram_user(&headers, &state).ok_or_else(unauthorized)?;
+
+    if let Some(include) = body.include_in_portfolio {
+        db::update_include_in_portfolio(&state.db, user.id, &address, include)
+            .map_err(internal_error)?;
+    }
+
+    if let Some(order) = body.sort_order {
+        db::update_sort_order(&state.db, user.id, &address, order).map_err(internal_error)?;
+    }
+
+    Ok(Json(SuccessResponse {
+        ok: true,
+        message: format!("Updated {address}"),
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/watches/reorder
+// ---------------------------------------------------------------------------
+
+async fn reorder_watches(
+    State(state): State<Arc<WebAppState>>,
+    headers: HeaderMap,
+    Json(body): Json<ReorderRequest>,
+) -> Result<Json<SuccessResponse>, (StatusCode, Json<ApiError>)> {
+    let user = get_telegram_user(&headers, &state).ok_or_else(unauthorized)?;
+
+    for (i, address) in body.addresses.iter().enumerate() {
+        let sort_order = (i as i32) * 10;
+        db::update_sort_order(&state.db, user.id, address, sort_order).map_err(internal_error)?;
+    }
+
+    Ok(Json(SuccessResponse {
+        ok: true,
+        message: "Reordered watches".to_string(),
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/price/divi
+// ---------------------------------------------------------------------------
+
+async fn get_divi_price() -> Result<Json<PriceResponse>, (StatusCode, Json<ApiError>)> {
+    // Simple cache using a static Mutex
+    use std::sync::Mutex;
+    use std::time::Instant;
+
+    static CACHE: std::sync::LazyLock<Mutex<Option<(f64, Instant)>>> =
+        std::sync::LazyLock::new(|| Mutex::new(None));
+
+    let cache_ttl = std::time::Duration::from_secs(300); // 5 minutes
+
+    // Check cache
+    {
+        if let Ok(guard) = CACHE.lock() {
+            if let Some((price, fetched_at)) = *guard {
+                if fetched_at.elapsed() < cache_ttl {
+                    return Ok(Json(PriceResponse {
+                        usd: price,
+                        last_updated: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                    }));
+                }
+            }
+        }
+    }
+
+    // Fetch from CoinGecko
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://api.coingecko.com/api/v3/simple/price?ids=divi&vs_currencies=usd")
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| internal_error(format!("CoinGecko request failed: {e}")))?;
+
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| internal_error(format!("CoinGecko parse failed: {e}")))?;
+
+    let price = body["divi"]["usd"].as_f64().unwrap_or(0.0);
+
+    // Update cache
+    if let Ok(mut guard) = CACHE.lock() {
+        *guard = Some((price, Instant::now()));
+    }
+
+    Ok(Json(PriceResponse {
+        usd: price,
+        last_updated: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // GET /api/watches/:address/analysis
 // ---------------------------------------------------------------------------
 
@@ -584,9 +723,9 @@ async fn get_analysis(
 
     let label = db::get_watch_label(&state.db, user.id, &address).unwrap_or(None);
 
+    let total_rewards_sat = db::sum_stake_rewards(&state.db, &address).unwrap_or(0);
     let total_received = if is_vault {
-        let total_rewards = db::sum_stake_rewards(&state.db, &address).unwrap_or(0);
-        utils::satoshi_to_divi(total_rewards)
+        utils::satoshi_to_divi(total_rewards_sat)
     } else {
         utils::satoshi_to_divi(balance.received)
     };
@@ -612,11 +751,13 @@ async fn get_analysis(
         balance_satoshis: balance.balance,
         is_vault,
         total_received_divi: total_received,
+        total_rewards_satoshis: total_rewards_sat,
         stakes_24h,
         stakes_7d,
         stakes_30d,
         rewards_24h_satoshis: rewards_24h,
         avg_stake_divi: utils::satoshi_to_divi(avg_amount),
+        avg_stake_satoshis: avg_amount,
         expected_frequency: expected_str,
         expected_frequency_secs: exp_secs_opt,
         expected_interval_secs: exp_secs_opt,
