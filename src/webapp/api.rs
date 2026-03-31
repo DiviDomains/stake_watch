@@ -379,7 +379,12 @@ async fn add_watch(
         return Err(bad_request("You are already watching this address"));
     }
 
-    info!(telegram_id = user.id, address, ?label, "Web: address watch added");
+    info!(
+        telegram_id = user.id,
+        address,
+        ?label,
+        "Web: address watch added"
+    );
 
     // Spawn background backfill
     let rpc = Arc::clone(&state.rpc);
@@ -515,8 +520,7 @@ async fn get_analysis(
         None => "Never".to_string(),
     };
 
-    let label = db::get_watch_label(&state.db, user.id, &address)
-        .unwrap_or(None);
+    let label = db::get_watch_label(&state.db, user.id, &address).unwrap_or(None);
 
     let total_received = if is_vault {
         let total_rewards = db::sum_stake_rewards(&state.db, &address).unwrap_or(0);
@@ -645,8 +649,8 @@ async fn remove_alert(
 ) -> Result<Json<SuccessResponse>, (StatusCode, Json<ApiError>)> {
     let user = get_telegram_user(&headers, &state.secrets).ok_or_else(unauthorized)?;
 
-    let removed = db::remove_alert_subscription(&state.db, user.id, &alert_type)
-        .map_err(internal_error)?;
+    let removed =
+        db::remove_alert_subscription(&state.db, user.id, &alert_type).map_err(internal_error)?;
 
     if !removed {
         return Err(bad_request(format!(
@@ -929,11 +933,7 @@ async fn search(
 async fn get_network(
     State(state): State<Arc<WebAppState>>,
 ) -> Result<Json<NetworkInfo>, (StatusCode, Json<ApiError>)> {
-    let block_count = state
-        .rpc
-        .get_block_count()
-        .await
-        .map_err(internal_error)?;
+    let block_count = state.rpc.get_block_count().await.map_err(internal_error)?;
 
     Ok(Json(NetworkInfo {
         block_count,

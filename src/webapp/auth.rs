@@ -62,8 +62,7 @@ pub fn validate_init_data(init_data: &str, bot_token: &str) -> Option<TelegramUs
     let secret_key = secret_mac.finalize().into_bytes();
 
     // 5. computed_hash = HMAC-SHA256(secret_key, data_check_string)
-    let mut data_mac =
-        HmacSha256::new_from_slice(&secret_key).expect("HMAC can take any size key");
+    let mut data_mac = HmacSha256::new_from_slice(&secret_key).expect("HMAC can take any size key");
     data_mac.update(data_check_string.as_bytes());
     let computed = data_mac.finalize().into_bytes();
     let computed_hex = hex::encode(computed);

@@ -5,8 +5,7 @@ use teloxide::prelude::*;
 use tracing::{error, info};
 
 use stake_watch::{
-    block_processor, bot, config, db, fork_detector, monitor, notifier, rpc, stake_analyzer,
-    webapp,
+    block_processor, bot, config, db, fork_detector, monitor, notifier, rpc, stake_analyzer, webapp,
 };
 
 // ---------------------------------------------------------------------------
