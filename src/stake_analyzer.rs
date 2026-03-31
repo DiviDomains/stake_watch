@@ -297,15 +297,10 @@ impl StakeAnalyzer {
                     let mut latest_height: Option<u64> = None;
 
                     for (height, reward, txid) in &stake_blocks {
-
                         match crate::db::record_stake_event(
-                            db,
-                            address,
-                            txid,
-                            *height,
-                            "",  // block hash not available from deltas
-                            *reward,
-                            "stake",
+                            db, address, txid, *height,
+                            "", // block hash not available from deltas
+                            *reward, "stake",
                         ) {
                             Ok(true) => {
                                 recorded += 1;
@@ -352,10 +347,7 @@ impl StakeAnalyzer {
         }
 
         // Filter to positive deltas (credits) and take the most recent 20
-        let mut positive_deltas: Vec<_> = deltas
-            .into_iter()
-            .filter(|d| d.satoshis > 0)
-            .collect();
+        let mut positive_deltas: Vec<_> = deltas.into_iter().filter(|d| d.satoshis > 0).collect();
 
         // Sort by height descending so we process most recent first
         positive_deltas.sort_by(|a, b| b.height.cmp(&a.height));
@@ -496,11 +488,7 @@ impl StakeAnalyzer {
 
             // Check each vout for a vault output containing our address
             for vout in &tx.vout {
-                let is_vault = vout
-                    .script_pub_key
-                    .script_type
-                    .as_deref()
-                    == Some("vault");
+                let is_vault = vout.script_pub_key.script_type.as_deref() == Some("vault");
 
                 if !is_vault {
                     continue;
@@ -591,9 +579,7 @@ mod tests {
 
     #[test]
     fn test_negative_balance_returns_infinity() {
-        assert!(
-            StakeAnalyzer::compute_expected_interval(-100_000_000, 3_000_000).is_infinite()
-        );
+        assert!(StakeAnalyzer::compute_expected_interval(-100_000_000, 3_000_000).is_infinite());
     }
 
     #[test]

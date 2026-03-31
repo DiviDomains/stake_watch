@@ -68,12 +68,7 @@ pub struct BotState {
 }
 
 impl BotState {
-    pub fn new(
-        db: DbPool,
-        rpc: Arc<dyn RpcClient>,
-        config: AppConfig,
-        secrets: Secrets,
-    ) -> Self {
+    pub fn new(db: DbPool, rpc: Arc<dyn RpcClient>, config: AppConfig, secrets: Secrets) -> Self {
         Self {
             db,
             rpc,
@@ -120,10 +115,7 @@ async fn command_handler(
     state: Arc<BotState>,
 ) -> ResponseResult<()> {
     let telegram_id = msg.chat.id.0;
-    let username = msg
-        .from
-        .as_ref()
-        .and_then(|u| u.username.clone());
+    let username = msg.from.as_ref().and_then(|u| u.username.clone());
 
     let response = match cmd {
         Command::Start => handle_start(&state, telegram_id, username.as_deref()).await,
@@ -186,7 +178,11 @@ async fn handle_start(
         let _ = db::add_watch(&state.db, telegram_id, address, Some(label));
     }
 
-    info!(telegram_id, ?username, "New user registered with default watches");
+    info!(
+        telegram_id,
+        ?username,
+        "New user registered with default watches"
+    );
 
     Ok(concat!(
         "<b>Welcome to Stake Watch!</b>\n\n",
@@ -243,11 +239,9 @@ fn handle_help(state: &BotState, telegram_id: i64) -> Result<String> {
 async fn handle_watch(state: &BotState, telegram_id: i64, arg: &str) -> Result<String> {
     let arg = arg.trim();
     if arg.is_empty() {
-        return Ok(
-            "Usage: /watch &lt;address&gt; [label]\n\n\
+        return Ok("Usage: /watch &lt;address&gt; [label]\n\n\
              Example: /watch D8nQRyfgS5xL7dZDC39i9s41iiCAEeq7Zk My Wallet"
-                .to_string(),
-        );
+            .to_string());
     }
 
     // Split into address and optional label
@@ -257,9 +251,7 @@ async fn handle_watch(state: &BotState, telegram_id: i64, arg: &str) -> Result<S
 
     // Validate address format
     if !address.starts_with('D') {
-        return Ok(
-            "Invalid address: must start with 'D' (mainnet Divi address).".to_string(),
-        );
+        return Ok("Invalid address: must start with 'D' (mainnet Divi address).".to_string());
     }
 
     // Validate via RPC
@@ -400,17 +392,13 @@ async fn handle_analyze(state: &BotState, telegram_id: i64, arg: &str) -> Result
             let watches = db::get_watches_for_user(&state.db, telegram_id)?;
             match watches.len() {
                 0 => {
-                    return Ok(
-                        "You have no watched addresses. Use /watch first.".to_string(),
-                    );
+                    return Ok("You have no watched addresses. Use /watch first.".to_string());
                 }
                 1 => watches[0].address.clone(),
                 _ => {
-                    return Ok(
-                        "You have multiple watched addresses. Please specify:\n\
+                    return Ok("You have multiple watched addresses. Please specify:\n\
                          /analyze &lt;address&gt;"
-                            .to_string(),
-                    );
+                        .to_string());
                 }
             }
         } else {
@@ -451,9 +439,9 @@ async fn handle_analyze(state: &BotState, telegram_id: i64, arg: &str) -> Result
 
     // Use block height to determine when stakes happened (not detected_at
     // which is just the DB insertion time). Divi blocks are ~60 seconds apart.
-    let blocks_24h = 24 * 60;       // ~1,440 blocks
-    let blocks_7d = 7 * 24 * 60;    // ~10,080 blocks
-    let blocks_30d = 30 * 24 * 60;  // ~43,200 blocks
+    let blocks_24h = 24 * 60; // ~1,440 blocks
+    let blocks_7d = 7 * 24 * 60; // ~10,080 blocks
+    let blocks_30d = 30 * 24 * 60; // ~43,200 blocks
 
     let stakes_24h = stakes
         .iter()
@@ -575,7 +563,11 @@ async fn handle_status(state: &BotState) -> Result<String> {
     let watch_count = db::count_watches(&state.db)?;
     let user_count = db::count_users(&state.db)?;
 
-    let connection_status = if connected { "Connected" } else { "Disconnected" };
+    let connection_status = if connected {
+        "Connected"
+    } else {
+        "Disconnected"
+    };
 
     Ok(format!(
         "<b>Stake Watch Status</b>\n\n\
@@ -637,11 +629,9 @@ async fn handle_alerts(state: &BotState, telegram_id: i64) -> Result<String> {
 async fn handle_alert(state: &BotState, telegram_id: i64, arg: &str) -> Result<String> {
     let arg = arg.trim();
     if arg.is_empty() {
-        return Ok(
-            "Usage: /alert &lt;type&gt; [threshold]\n\n\
+        return Ok("Usage: /alert &lt;type&gt; [threshold]\n\n\
              Example: /alert large_tx 500000"
-                .to_string(),
-        );
+            .to_string());
     }
 
     let mut parts = arg.splitn(2, ' ');
@@ -695,11 +685,9 @@ async fn handle_unalert(state: &BotState, telegram_id: i64, arg: &str) -> Result
 async fn handle_fork_watch(state: &BotState, telegram_id: i64) -> Result<String> {
     db::add_fork_watcher(&state.db, telegram_id)?;
     info!(telegram_id, "Subscribed to fork alerts");
-    Ok(
-        "You are now subscribed to fork detection alerts.\n\n\
+    Ok("You are now subscribed to fork detection alerts.\n\n\
          You will be notified if the bot detects a blockchain fork."
-            .to_string(),
-    )
+        .to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -725,12 +713,10 @@ async fn handle_fork_status(state: &BotState) -> Result<String> {
     let db_endpoints = db::get_fork_endpoints(&state.db)?;
 
     if config_endpoints.is_empty() && db_endpoints.is_empty() {
-        return Ok(
-            "<b>Fork Detection</b>\n\n\
+        return Ok("<b>Fork Detection</b>\n\n\
              No fork monitoring endpoints configured.\n\
              Admins can add endpoints with /addfork."
-                .to_string(),
-        );
+            .to_string());
     }
 
     let mut text = String::from("<b>Fork Detection Status</b>\n\n");

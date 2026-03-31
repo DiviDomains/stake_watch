@@ -181,8 +181,7 @@ impl Secrets {
         let telegram_bot_token = std::env::var("TELEGRAM_BOT_TOKEN")
             .context("TELEGRAM_BOT_TOKEN env var is required")?;
 
-        let admin_ids_raw =
-            std::env::var("ADMIN_TELEGRAM_IDS").unwrap_or_default();
+        let admin_ids_raw = std::env::var("ADMIN_TELEGRAM_IDS").unwrap_or_default();
 
         let admin_telegram_ids: Vec<i64> = if admin_ids_raw.is_empty() {
             Vec::new()
@@ -199,7 +198,9 @@ impl Secrets {
 
         let rpc_username = std::env::var("RPC_USERNAME").ok().filter(|s| !s.is_empty());
         let rpc_password = std::env::var("RPC_PASSWORD").ok().filter(|s| !s.is_empty());
-        let chainz_api_key = std::env::var("CHAINZ_API_KEY").ok().filter(|s| !s.is_empty());
+        let chainz_api_key = std::env::var("CHAINZ_API_KEY")
+            .ok()
+            .filter(|s| !s.is_empty());
 
         info!(
             admin_count = admin_telegram_ids.len(),

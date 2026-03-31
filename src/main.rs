@@ -4,7 +4,9 @@ use std::sync::Arc;
 use teloxide::prelude::*;
 use tracing::{error, info};
 
-use stake_watch::{block_processor, bot, config, db, fork_detector, monitor, notifier, rpc, stake_analyzer};
+use stake_watch::{
+    block_processor, bot, config, db, fork_detector, monitor, notifier, rpc, stake_analyzer,
+};
 
 // ---------------------------------------------------------------------------
 // CLI arguments
@@ -50,9 +52,7 @@ async fn main() -> Result<()> {
             if cli.env == ".env" {
                 info!("No .env file found, using existing environment variables");
             } else {
-                return Err(e).with_context(|| {
-                    format!("Failed to load env file: {}", cli.env)
-                });
+                return Err(e).with_context(|| format!("Failed to load env file: {}", cli.env));
             }
         }
     }
@@ -131,11 +131,8 @@ async fn main() -> Result<()> {
     });
 
     // Start block processor
-    let processor = block_processor::BlockProcessor::new(
-        rpc_client.clone(),
-        db_pool.clone(),
-        notifier.clone(),
-    );
+    let processor =
+        block_processor::BlockProcessor::new(rpc_client.clone(), db_pool.clone(), notifier.clone());
     let processor_handle = tokio::spawn(async move {
         processor.run(block_rx).await;
     });

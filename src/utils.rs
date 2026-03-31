@@ -165,10 +165,7 @@ mod tests {
 
     #[test]
     fn test_satoshi_to_divi_large() {
-        assert_eq!(
-            satoshi_to_divi(100_000_000_000_000),
-            "1000000.00000000"
-        );
+        assert_eq!(satoshi_to_divi(100_000_000_000_000), "1000000.00000000");
     }
 
     #[test]

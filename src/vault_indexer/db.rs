@@ -142,7 +142,15 @@ pub fn add_vault_utxo(
         "INSERT OR REPLACE INTO vault_utxos
          (txid, vout_n, owner_address, manager_address, value_satoshis, block_height, block_hash)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![txid, vout_n, owner, manager, value_satoshis, height as i64, hash],
+        params![
+            txid,
+            vout_n,
+            owner,
+            manager,
+            value_satoshis,
+            height as i64,
+            hash
+        ],
     )?;
     Ok(())
 }
@@ -201,11 +209,7 @@ pub fn get_unspent_utxos(db: &VaultDb, owner_address: &str) -> Result<Vec<VaultU
 
 /// Get vault UTXO history for an address (both spent and unspent), ordered by
 /// block_height descending, with an optional limit.
-pub fn get_stake_history(
-    db: &VaultDb,
-    owner_address: &str,
-    limit: u32,
-) -> Result<Vec<VaultUtxo>> {
+pub fn get_stake_history(db: &VaultDb, owner_address: &str, limit: u32) -> Result<Vec<VaultUtxo>> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
     let mut stmt = conn.prepare(
         "SELECT txid, vout_n, owner_address, manager_address, value_satoshis,
@@ -225,11 +229,9 @@ pub fn get_stake_history(
 pub fn get_stats(db: &VaultDb) -> Result<IndexerStats> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
 
-    let total_utxos: u64 = conn.query_row(
-        "SELECT COUNT(*) FROM vault_utxos",
-        [],
-        |row| row.get::<_, i64>(0),
-    )? as u64;
+    let total_utxos: u64 = conn.query_row("SELECT COUNT(*) FROM vault_utxos", [], |row| {
+        row.get::<_, i64>(0)
+    })? as u64;
 
     let total_unspent: u64 = conn.query_row(
         "SELECT COUNT(*) FROM vault_utxos WHERE spent_txid IS NULL",

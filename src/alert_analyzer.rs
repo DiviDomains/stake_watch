@@ -131,10 +131,7 @@ impl AlertAnalyzer {
             if input_count as f64 >= DEFAULT_MANY_INPUTS {
                 anomalies.push(Anomaly {
                     alert_type: ALERT_MANY_INPUTS,
-                    description: format!(
-                        "Transaction with {} inputs: tx {}",
-                        input_count, tx.txid
-                    ),
+                    description: format!("Transaction with {} inputs: tx {}", input_count, tx.txid),
                     value: input_count as f64,
                     default_threshold: DEFAULT_MANY_INPUTS,
                 });
@@ -222,11 +219,7 @@ impl AlertAnalyzer {
 
     /// For each anomaly, find subscribers for the specific alert type AND
     /// subscribers for "anything_unusual", then send notifications.
-    async fn notify_subscribers(
-        &self,
-        block: &Block,
-        anomalies: &[Anomaly],
-    ) -> anyhow::Result<()> {
+    async fn notify_subscribers(&self, block: &Block, anomalies: &[Anomaly]) -> anyhow::Result<()> {
         // Collect all "anything_unusual" subscribers once
         let anything_subs = db::get_subscribers_for_alert_type(&self.db, ALERT_ANYTHING_UNUSUAL)
             .unwrap_or_default();
@@ -260,10 +253,7 @@ impl AlertAnalyzer {
                  Type: `{}`\n\
                  {}\n\n\
                  Block: `{}`",
-                block.height,
-                anomaly.alert_type,
-                anomaly.description,
-                block.hash,
+                block.height, anomaly.alert_type, anomaly.description, block.hash,
             );
 
             for chat_id in &all_chat_ids {

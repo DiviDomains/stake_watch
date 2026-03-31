@@ -173,15 +173,10 @@ impl JsonRpcClient {
             match req.send().await {
                 Ok(resp) => {
                     let status = resp.status();
-                    let text = resp
-                        .text()
-                        .await
-                        .context("reading RPC response body")?;
+                    let text = resp.text().await.context("reading RPC response body")?;
 
                     if !status.is_success() {
-                        return Err(anyhow!(
-                            "RPC HTTP {status} for {method}: {text}"
-                        ));
+                        return Err(anyhow!("RPC HTTP {status} for {method}: {text}"));
                     }
 
                     let parsed: Value = serde_json::from_str(&text)
@@ -235,9 +230,7 @@ impl RpcClient for JsonRpcClient {
 
     async fn get_raw_transaction(&self, txid: &str) -> Result<Transaction> {
         // verbose = 1 to get decoded JSON
-        let result = self
-            .call("getrawtransaction", json!([txid, 1]))
-            .await?;
+        let result = self.call("getrawtransaction", json!([txid, 1])).await?;
         let tx: Transaction =
             serde_json::from_value(result).context("deserializing getrawtransaction")?;
         Ok(tx)
@@ -265,9 +258,7 @@ impl RpcClient for JsonRpcClient {
         if let Some(e) = end {
             params["end"] = json!(e);
         }
-        let result = self
-            .call("getaddressdeltas", json!([params]))
-            .await?;
+        let result = self.call("getaddressdeltas", json!([params])).await?;
         let deltas: Vec<AddressDelta> =
             serde_json::from_value(result).context("deserializing getaddressdeltas")?;
         Ok(deltas)
@@ -292,9 +283,7 @@ impl RpcClient for JsonRpcClient {
     }
 
     async fn validate_address(&self, address: &str) -> Result<AddressValidation> {
-        let result = self
-            .call("validateaddress", json!([address]))
-            .await?;
+        let result = self.call("validateaddress", json!([address])).await?;
         let validation: AddressValidation =
             serde_json::from_value(result).context("deserializing validateaddress")?;
         Ok(validation)
@@ -303,10 +292,7 @@ impl RpcClient for JsonRpcClient {
     async fn get_vault_balance(&self, address: &str) -> Result<AddressBalance> {
         // Use getaddressbalance with only_vaults=true (second param)
         let result = self
-            .call(
-                "getaddressbalance",
-                json!([{"addresses": [address]}, true]),
-            )
+            .call("getaddressbalance", json!([{"addresses": [address]}, true]))
             .await?;
         let balance: AddressBalance =
             serde_json::from_value(result).context("deserializing vault balance")?;
@@ -328,7 +314,9 @@ impl RpcClient for JsonRpcClient {
             addr_obj["end"] = json!(e);
         }
         // Pass true as second param for only_vaults
-        let result = self.call("getaddressdeltas", json!([addr_obj, true])).await?;
+        let result = self
+            .call("getaddressdeltas", json!([addr_obj, true]))
+            .await?;
         let deltas: Vec<AddressDelta> =
             serde_json::from_value(result).context("deserializing vault deltas")?;
         Ok(deltas)
@@ -420,18 +408,13 @@ impl RpcClient for ChainzClient {
     }
 
     async fn get_raw_transaction(&self, txid: &str) -> Result<Transaction> {
-        let val = self
-            .get_json(&format!("q=txinfo&t={txid}"))
-            .await?;
-        let tx: Transaction =
-            serde_json::from_value(val).context("deserializing chainz txinfo")?;
+        let val = self.get_json(&format!("q=txinfo&t={txid}")).await?;
+        let tx: Transaction = serde_json::from_value(val).context("deserializing chainz txinfo")?;
         Ok(tx)
     }
 
     async fn get_address_balance(&self, address: &str) -> Result<AddressBalance> {
-        let text = self
-            .get_text(&format!("q=getbalance&a={address}"))
-            .await?;
+        let text = self.get_text(&format!("q=getbalance&a={address}")).await?;
         // chainz returns balance in DIVI (float), convert to satoshis
         let divi: f64 = text
             .parse()
@@ -449,9 +432,7 @@ impl RpcClient for ChainzClient {
         _start: Option<u64>,
         _end: Option<u64>,
     ) -> Result<Vec<AddressDelta>> {
-        Err(anyhow!(
-            "getaddressdeltas not supported on chainz backend"
-        ))
+        Err(anyhow!("getaddressdeltas not supported on chainz backend"))
     }
 
     async fn get_lottery_block_winners(&self, _hash: &str) -> Result<Option<LotteryWinners>> {
@@ -498,15 +479,8 @@ pub fn create_rpc_client(config: &BackendConfig, secrets: &Secrets) -> Box<dyn R
             secrets.chainz_api_key.clone(),
         ))
     } else {
-        let (user, pass) = if config
-            .rpc_auth
-            .as_ref()
-            .map_or(false, |a| a.enabled)
-        {
-            (
-                secrets.rpc_username.clone(),
-                secrets.rpc_password.clone(),
-            )
+        let (user, pass) = if config.rpc_auth.as_ref().map_or(false, |a| a.enabled) {
+            (secrets.rpc_username.clone(), secrets.rpc_password.clone())
         } else {
             (None, None)
         };

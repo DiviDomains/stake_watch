@@ -80,15 +80,13 @@ impl BlockMonitor for SocketIoMonitor {
                             return;
                         }
                     }
-                    Payload::Binary(bytes) => {
-                        match String::from_utf8(bytes.to_vec()) {
-                            Ok(s) => s,
-                            Err(e) => {
-                                warn!("Failed to decode binary zmq-event payload: {}", e);
-                                return;
-                            }
+                    Payload::Binary(bytes) => match String::from_utf8(bytes.to_vec()) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            warn!("Failed to decode binary zmq-event payload: {}", e);
+                            return;
                         }
-                    }
+                    },
                     #[allow(deprecated)]
                     Payload::String(s) => s.clone(),
                 };

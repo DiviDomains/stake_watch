@@ -77,8 +77,7 @@ pub fn init_db(path: &str) -> Result<DbPool> {
             .with_context(|| format!("creating db directory: {}", parent.display()))?;
     }
 
-    let conn = Connection::open(path)
-        .with_context(|| format!("opening database at {path}"))?;
+    let conn = Connection::open(path).with_context(|| format!("opening database at {path}"))?;
 
     // Enable WAL mode for better concurrent read performance
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
@@ -280,9 +279,7 @@ pub fn get_all_watched_addresses(db: &DbPool) -> Result<HashSet<String>> {
 
 pub fn get_users_for_address(db: &DbPool, address: &str) -> Result<Vec<i64>> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
-    let mut stmt = conn.prepare(
-        "SELECT telegram_id FROM watched_addresses WHERE address = ?1",
-    )?;
+    let mut stmt = conn.prepare("SELECT telegram_id FROM watched_addresses WHERE address = ?1")?;
     let rows = stmt
         .query_map(params![address], |row| row.get::<_, i64>(0))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -373,11 +370,7 @@ pub fn get_recent_stakes(db: &DbPool, address: &str, limit: u32) -> Result<Vec<S
     Ok(rows)
 }
 
-pub fn update_last_stake(
-    db: &DbPool,
-    address: &str,
-    height: u64,
-) -> Result<()> {
+pub fn update_last_stake(db: &DbPool, address: &str, height: u64) -> Result<()> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
     let now = now_str();
     conn.execute(
@@ -436,10 +429,7 @@ pub fn remove_alert_subscription(db: &DbPool, telegram_id: i64, alert_type: &str
     Ok(deleted > 0)
 }
 
-pub fn get_subscriptions_for_user(
-    db: &DbPool,
-    telegram_id: i64,
-) -> Result<Vec<AlertSubscription>> {
+pub fn get_subscriptions_for_user(db: &DbPool, telegram_id: i64) -> Result<Vec<AlertSubscription>> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
     let mut stmt = conn.prepare(
         "SELECT id, telegram_id, alert_type, threshold, created_at
@@ -533,18 +523,14 @@ pub fn add_fork_endpoint(
 
 pub fn remove_fork_endpoint(db: &DbPool, name: &str) -> Result<bool> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
-    let deleted = conn.execute(
-        "DELETE FROM fork_endpoints WHERE name = ?1",
-        params![name],
-    )?;
+    let deleted = conn.execute("DELETE FROM fork_endpoints WHERE name = ?1", params![name])?;
     Ok(deleted > 0)
 }
 
 pub fn get_fork_endpoints(db: &DbPool) -> Result<Vec<ForkEndpoint>> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
-    let mut stmt = conn.prepare(
-        "SELECT id, name, rpc_url, added_by, added_at FROM fork_endpoints",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT id, name, rpc_url, added_by, added_at FROM fork_endpoints")?;
     let rows = stmt
         .query_map([], |row| {
             Ok(ForkEndpoint {
@@ -581,31 +567,21 @@ pub fn record_fork_event(
 
 pub fn count_watches(db: &DbPool) -> Result<u64> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM watched_addresses",
-        [],
-        |row| row.get(0),
-    )?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM watched_addresses", [], |row| {
+        row.get(0)
+    })?;
     Ok(count as u64)
 }
 
 pub fn count_users(db: &DbPool) -> Result<u64> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM users",
-        [],
-        |row| row.get(0),
-    )?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))?;
     Ok(count as u64)
 }
 
 pub fn count_fork_watchers(db: &DbPool) -> Result<u64> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM fork_watchers",
-        [],
-        |row| row.get(0),
-    )?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM fork_watchers", [], |row| row.get(0))?;
     Ok(count as u64)
 }
 

@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::utils::satoshi_to_divi;
 use super::db::{self, VaultDb};
+use crate::utils::satoshi_to_divi;
 
 // ---------------------------------------------------------------------------
 // Application state
@@ -34,10 +34,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/vault/stakes/{address}",
             axum::routing::get(get_stakes),
         )
-        .route(
-            "/api/vault/utxos/{address}",
-            axum::routing::get(get_utxos),
-        )
+        .route("/api/vault/utxos/{address}", axum::routing::get(get_utxos))
         .route("/api/vault/stats", axum::routing::get(get_stats))
         .route("/health", axum::routing::get(health))
         .layer(cors)

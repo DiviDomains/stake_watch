@@ -34,9 +34,7 @@ pub fn create_monitor(
             let poll_config = config
                 .polling
                 .clone()
-                .unwrap_or(crate::config::PollingConfig {
-                    interval_secs: 30,
-                });
+                .unwrap_or(crate::config::PollingConfig { interval_secs: 30 });
             Box::new(polling::PollingMonitor::new(poll_config, rpc))
         }
     }

@@ -4,8 +4,8 @@ use std::time::Instant;
 use anyhow::Result;
 use tracing::{debug, error, info, warn};
 
-use crate::rpc::RpcClient;
 use super::db::{self, VaultDb};
+use crate::rpc::RpcClient;
 
 /// Chain scanner that processes blocks for vault UTXOs.
 pub struct Scanner {
@@ -49,9 +49,7 @@ impl Scanner {
         // 5. Process inputs: mark spent vault UTXOs
         for vin in &tx.vin {
             if let (Some(ref prev_txid), Some(prev_vout)) = (&vin.txid, vin.vout) {
-                if let Err(e) =
-                    db::mark_spent(&self.db, prev_txid, prev_vout, &tx.txid, height)
-                {
+                if let Err(e) = db::mark_spent(&self.db, prev_txid, prev_vout, &tx.txid, height) {
                     warn!(
                         prev_txid = %prev_txid,
                         prev_vout = prev_vout,
@@ -64,11 +62,7 @@ impl Scanner {
 
         // 6. Process outputs: add new vault UTXOs
         for vout in &tx.vout {
-            let is_vault = vout
-                .script_pub_key
-                .script_type
-                .as_deref()
-                == Some("vault");
+            let is_vault = vout.script_pub_key.script_type.as_deref() == Some("vault");
 
             if !is_vault {
                 continue;
@@ -121,12 +115,7 @@ impl Scanner {
         let scan_start = Instant::now();
         let mut processed: u64 = 0;
 
-        info!(
-            start,
-            end,
-            total,
-            "Starting vault UTXO scan"
-        );
+        info!(start, end, total, "Starting vault UTXO scan");
 
         for height in start..=end {
             if let Err(e) = self.process_block(height).await {

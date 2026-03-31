@@ -209,14 +209,8 @@ impl ForkDetector {
 
         // Record each mismatch in the database
         for (ref ep_a, ref hash_a, ref ep_b, ref hash_b) in &mismatches {
-            if let Err(e) = db::record_fork_event(
-                &self.db,
-                min_height,
-                ep_a,
-                hash_a,
-                ep_b,
-                hash_b,
-            ) {
+            if let Err(e) = db::record_fork_event(&self.db, min_height, ep_a, hash_a, ep_b, hash_b)
+            {
                 error!(error = %e, "Failed to record fork event");
             }
         }

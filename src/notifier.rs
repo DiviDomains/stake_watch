@@ -214,11 +214,7 @@ impl Notifier {
 
     /// Notify all users who are watching a given address. Looks up watchers
     /// in the database and sends the message to each.
-    pub async fn notify_users_for_address(
-        &self,
-        address: &str,
-        message: &str,
-    ) -> Result<()> {
+    pub async fn notify_users_for_address(&self, address: &str, message: &str) -> Result<()> {
         let user_ids = db::get_users_for_address(&self.db, address)?;
 
         if user_ids.is_empty() {
@@ -264,10 +260,7 @@ impl Notifier {
             return Ok(());
         }
 
-        info!(
-            admin_count = admin_ids.len(),
-            "Sending admin notification"
-        );
+        info!(admin_count = admin_ids.len(), "Sending admin notification");
 
         self.notify_users(admin_ids, message).await
     }

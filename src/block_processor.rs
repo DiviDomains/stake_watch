@@ -19,11 +19,7 @@ pub struct BlockProcessor {
 }
 
 impl BlockProcessor {
-    pub fn new(
-        rpc: Arc<dyn RpcClient>,
-        db: DbPool,
-        notifier: Arc<Notifier>,
-    ) -> Self {
+    pub fn new(rpc: Arc<dyn RpcClient>, db: DbPool, notifier: Arc<Notifier>) -> Self {
         let alert_analyzer = AlertAnalyzer::new(db.clone(), Arc::clone(&notifier));
         Self {
             rpc,
@@ -59,10 +55,16 @@ impl BlockProcessor {
         let mut block = None;
         for attempt in 0..3 {
             match self.rpc.get_block(hash).await {
-                Ok(b) => { block = Some(b); break; }
+                Ok(b) => {
+                    block = Some(b);
+                    break;
+                }
                 Err(e) if attempt < 2 => {
                     tracing::debug!(hash, attempt, error = %e, "Block not ready, retrying...");
-                    tokio::time::sleep(tokio::time::Duration::from_millis(500 * (attempt + 1) as u64)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(
+                        500 * (attempt + 1) as u64,
+                    ))
+                    .await;
                 }
                 Err(e) => return Err(e),
             }
@@ -106,13 +108,8 @@ impl BlockProcessor {
             match self.rpc.get_raw_transaction(coinbase_txid).await {
                 Ok(coinbase_tx) => {
                     if !watched_addresses.is_empty() {
-                        self.check_stake_outputs(
-                            &block,
-                            &coinbase_tx,
-                            &watched_addresses,
-                            "stake",
-                        )
-                        .await;
+                        self.check_stake_outputs(&block, &coinbase_tx, &watched_addresses, "stake")
+                            .await;
                     }
                     fetched_transactions.push(coinbase_tx);
                 }
@@ -189,10 +186,7 @@ impl BlockProcessor {
             }
         }
 
-        debug!(
-            height = block.height,
-            "Block processing complete"
-        );
+        debug!(height = block.height, "Block processing complete");
 
         Ok(())
     }
@@ -329,8 +323,7 @@ impl BlockProcessor {
                         );
 
                         // Record lottery event
-                        let amount_satoshis =
-                            (winner.amount * 100_000_000.0).round() as i64;
+                        let amount_satoshis = (winner.amount * 100_000_000.0).round() as i64;
                         if let Err(e) = db::record_stake_event(
                             &self.db,
                             &winner.address,
@@ -357,10 +350,7 @@ impl BlockProcessor {
                         }
 
                         // Notify users watching this address
-                        let users = match db::get_users_for_address(
-                            &self.db,
-                            &winner.address,
-                        ) {
+                        let users = match db::get_users_for_address(&self.db, &winner.address) {
                             Ok(users) => users,
                             Err(e) => {
                                 error!(
@@ -381,9 +371,7 @@ impl BlockProcessor {
                         );
 
                         for chat_id in &users {
-                            if let Err(e) =
-                                self.notifier.send_message(*chat_id, &message).await
-                            {
+                            if let Err(e) = self.notifier.send_message(*chat_id, &message).await {
                                 warn!(
                                     chat_id = chat_id,
                                     address = %winner.address,
@@ -396,10 +384,7 @@ impl BlockProcessor {
                 }
             }
             Ok(None) => {
-                debug!(
-                    height = block.height,
-                    "No lottery winners for this block"
-                );
+                debug!(height = block.height, "No lottery winners for this block");
             }
             Err(e) => {
                 // Not all blocks have lottery data; this is expected to fail
