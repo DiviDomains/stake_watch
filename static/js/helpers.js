@@ -132,7 +132,7 @@ export function escapeHtml(str) {
  * Create a clickable address span that navigates to the address page.
  */
 export function addressLink(address, cssClass = 'address') {
-    return `<span class="${cssClass}" onclick="navigate('address', { address: '${escapeHtml(address)}' })">${escapeHtml(address)}</span>`;
+    return `<span class="${cssClass}" style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted" onclick="event.stopPropagation(); navigate('address', { address: '${escapeHtml(address)}' })">${escapeHtml(address)}</span>`;
 }
 
 /**
