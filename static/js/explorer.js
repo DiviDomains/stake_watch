@@ -596,7 +596,7 @@ export async function renderAddressPage(container, address) {
             }
         }
 
-        // Download buttons
+        // Download buttons — JSON uses displayed data, CSV fetches ALL on click
         window.__addrDownloadData = {
             address,
             balance_divi: addrData?.balance_divi,
@@ -605,20 +605,45 @@ export async function renderAddressPage(container, address) {
             transactions: deltas,
         };
 
-        window.__addrCsvData = deltas.map(d => [
-            d.height ?? '',
-            d.txid ?? '',
-            d.amount_divi ?? '',
-        ]);
-
         html += `
             <div style="display:flex; gap:8px; margin-top:var(--space-lg);">
                 <button class="btn btn-ghost btn-sm" onclick="downloadJson(window.__addrDownloadData, 'address-${escapeHtml(address)}.json')">Download JSON</button>
-                <button class="btn btn-ghost btn-sm" onclick="downloadCsv(window.__addrCsvData, ['height','txid','amount_divi'], 'address-${escapeHtml(address)}.csv')">Download CSV</button>
+                <button class="btn btn-ghost btn-sm" id="explorer-csv-btn">Download All CSV</button>
             </div>`;
 
         html += `</div>`;
         container.innerHTML = html;
+
+        // Wire up CSV download button to fetch ALL transactions
+        const csvBtn = document.getElementById('explorer-csv-btn');
+        if (csvBtn) {
+            csvBtn.addEventListener('click', async () => {
+                csvBtn.textContent = 'Fetching all transactions...';
+                csvBtn.disabled = true;
+                try {
+                    const fullData = await api.getAddress(address, 100000);
+                    const allDeltas = fullData?.recent_deltas || [];
+                    const seen = new Set();
+                    const unique = [];
+                    for (const d of allDeltas) {
+                        if (!seen.has(d.txid)) {
+                            seen.add(d.txid);
+                            unique.push(d);
+                        }
+                    }
+                    const csvRows = unique.map(d => [
+                        d.height ?? '',
+                        d.txid ?? '',
+                        d.amount_divi ?? '',
+                    ]);
+                    downloadCsv(csvRows, ['block_height', 'txid', 'amount_divi'], `address-${address}.csv`);
+                    csvBtn.textContent = `Download All CSV (${unique.length})`;
+                } catch (e) {
+                    csvBtn.textContent = 'Download failed';
+                }
+                csvBtn.disabled = false;
+            });
+        }
 
     } catch (e) {
         container.innerHTML = `
