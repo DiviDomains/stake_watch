@@ -118,10 +118,24 @@ struct AddWatchRequest {
     label: Option<String>,
 }
 
+/// Known non-staking addresses (treasury, charity) that receive block rewards
+/// but don't participate in staking.
+const TREASURY_ADDRESS: &str = "DPhJsztbZafDc1YeyrRqSjmKjkmLJpQpUn";
+const CHARITY_ADDRESS: &str = "DPujt2XAdHyRcZNB5ySZBBVKjzY2uXZGYq";
+
+fn address_type(address: &str) -> &'static str {
+    match address {
+        TREASURY_ADDRESS => "treasury",
+        CHARITY_ADDRESS => "charity",
+        _ => "standard",
+    }
+}
+
 #[derive(Serialize)]
 struct AnalysisResponse {
     address: String,
     label: Option<String>,
+    address_type: String, // "standard", "treasury", "charity"
     balance_divi: String,
     balance_satoshis: i64,
     is_vault: bool,
@@ -135,7 +149,8 @@ struct AnalysisResponse {
     expected_frequency_secs: Option<f64>,
     expected_interval_secs: Option<f64>,
     last_stake: String,
-    last_stake_time: Option<String>,
+    last_stake_time: Option<i64>,
+    last_stake_secs_ago: Option<u64>,
     health: String,
     explorer_url: String,
 }
@@ -549,6 +564,7 @@ async fn get_analysis(
     Ok(Json(AnalysisResponse {
         address: address.clone(),
         label,
+        address_type: address_type(&address).to_string(),
         balance_divi: utils::satoshi_to_divi(balance.balance),
         balance_satoshis: balance.balance,
         is_vault,
@@ -562,11 +578,10 @@ async fn get_analysis(
         expected_frequency_secs: exp_secs_opt,
         expected_interval_secs: exp_secs_opt,
         last_stake: last_stake_str.clone(),
-        last_stake_time: if last_stake_str == "Never" {
-            None
-        } else {
-            Some(last_stake_str)
-        },
+        last_stake_time: last_stake_info
+            .as_ref()
+            .map(|(_, secs)| (chrono::Utc::now().timestamp() - *secs as i64)),
+        last_stake_secs_ago: last_stake_info.as_ref().map(|(_, secs)| *secs),
         health,
         explorer_url: state.explorer_url.clone(),
     }))

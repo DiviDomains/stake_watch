@@ -89,14 +89,25 @@ export async function renderDashboard(container) {
         for (const item of enriched) {
             const a = item.analysis;
             const label = item.label ? escapeHtml(item.label) : 'Unnamed';
-            const healthClass = a ? `health-${a.health}` : 'health-nodata';
-            const healthText = a ? getHealthText(a.health) : 'No data';
+            const healthClass = a
+                ? (isTreasuryOrCharity ? 'health-healthy' : `health-${a.health}`)
+                : 'health-nodata';
+            const healthText = isTreasuryOrCharity
+                ? (addrType === 'treasury' ? 'Treasury' : 'Charity')
+                : (a ? getHealthText(a.health) : 'No data');
             const balance = a ? formatDiviShort(a.balance_satoshis || 0) : '--';
             const isVault = a?.is_vault || false;
+            const addrType = a?.address_type || 'standard';
+            const isTreasuryOrCharity = addrType === 'treasury' || addrType === 'charity';
+
+            // Treasury/Charity don't stake — show payment info instead
+            const stakesLabel = isTreasuryOrCharity ? 'Payments' : 'Stakes / 24h';
             const stakesDay = a?.stakes_24h ?? '--';
-            const expectedFreq = a?.expected_interval_secs
-                ? formatDuration(a.expected_interval_secs)
-                : '--';
+            const expectedLabel = isTreasuryOrCharity ? 'Type' : 'Expected';
+            const expectedFreq = isTreasuryOrCharity
+                ? (addrType === 'treasury' ? 'Treasury' : 'Charity')
+                : (a?.expected_interval_secs ? formatDuration(a.expected_interval_secs) : '--');
+            const lastLabel = isTreasuryOrCharity ? 'Last Payment' : 'Last Stake';
             const lastStake = a?.last_stake_time ? timeAgo(a.last_stake_time) : 'Never';
 
             html += `
@@ -120,15 +131,15 @@ export async function renderDashboard(container) {
                         </div>
                         <div>
                             <div class="stat-value stat-value-sm">${stakesDay}</div>
-                            <div class="stat-label">Stakes / 24h</div>
+                            <div class="stat-label">${stakesLabel}</div>
                         </div>
                         <div>
                             <div class="stat-value stat-value-sm">${expectedFreq}</div>
-                            <div class="stat-label">Expected</div>
+                            <div class="stat-label">${expectedLabel}</div>
                         </div>
                         <div>
                             <div class="stat-value stat-value-sm text-xs">${lastStake}</div>
-                            <div class="stat-label">Last Stake</div>
+                            <div class="stat-label">${lastLabel}</div>
                         </div>
                     </div>
                 </div>`;
