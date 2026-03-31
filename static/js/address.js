@@ -116,15 +116,6 @@ export async function renderAddressDetail(container, address) {
                 </div>`;
         }
 
-        // Stake chart
-        if (stakeList.length > 0) {
-            html += `
-                <div class="chart-container card-stagger">
-                    <div class="chart-title">Reward History</div>
-                    <canvas id="stake-chart" height="200"></canvas>
-                </div>`;
-        }
-
         // Staking Calculator
         if (a && a.balance_satoshis > 0 && a.expected_interval_secs) {
             const balanceDivi = a.balance_satoshis / 1e8;
@@ -232,13 +223,7 @@ export async function renderAddressDetail(container, address) {
         html += `</div>`;
         container.innerHTML = html;
 
-        // Render chart after DOM is ready
-        if (stakeList.length > 0) {
-            const canvas = document.getElementById('stake-chart');
-            if (canvas) {
-                createStakeChart(canvas, stakeList);
-            }
-        }
+        // Chart removed — data shown in stakes table below
 
         // Initialize calculator if present
         if (document.getElementById('staking-calculator')) {
