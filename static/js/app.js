@@ -11,6 +11,7 @@ import { renderExplorer, renderBlockDetail, renderTxDetail, renderAddressPage } 
 import { renderWatches } from './watches.js';
 import { renderAlerts } from './alerts.js';
 import { renderAddressDetail } from './address.js';
+import { renderUsers } from './users.js';
 
 // ----- Telegram WebApp Initialization -----
 
@@ -49,7 +50,7 @@ function navigate(view, params = {}, pushHistory = true) {
     currentView = { view, params };
 
     // Update nav active state (only for top-level views)
-    const topViews = ['dashboard', 'explorer', 'watches', 'alerts'];
+    const topViews = ['dashboard', 'explorer', 'watches', 'alerts', 'users'];
     navBtns.forEach(btn => {
         if (topViews.includes(view)) {
             btn.classList.toggle('active', btn.dataset.view === view);
@@ -83,6 +84,9 @@ function navigate(view, params = {}, pushHistory = true) {
             break;
         case 'alerts':
             renderAlerts(content);
+            break;
+        case 'users':
+            renderUsers(content);
             break;
         case 'block':
             renderBlockDetail(content, params.hash);
@@ -193,6 +197,20 @@ window.haptic = function haptic(type = 'light') {
         }
     }
 };
+
+// ----- Admin Check: Show Users Tab for Admins -----
+
+(async function checkAdmin() {
+    try {
+        const me = await api.getMe();
+        if (me && me.is_admin) {
+            const usersBtn = document.getElementById('nav-users');
+            if (usersBtn) usersBtn.style.display = '';
+        }
+    } catch (_) {
+        // Not authenticated or error -- Users tab stays hidden
+    }
+})();
 
 // ----- Initial Load -----
 

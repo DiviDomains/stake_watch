@@ -68,6 +68,9 @@ export const api = {
         method: 'DELETE',
     }),
 
+    // -- Admin endpoints (require auth + admin) --
+    getAdminUsers: () => fetchApi('/admin/users'),
+
     // -- Explorer (no auth needed) --
     getBlocks: (limit = 20) => fetchApi(`/blocks?limit=${limit}`),
 

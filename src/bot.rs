@@ -183,7 +183,13 @@ fn ensure_user_registered(state: &BotState, telegram_id: i64, username: Option<&
     if let Ok(count) = db::get_watch_count_for_user(&state.db, telegram_id) {
         if count == 0 {
             for (address, label) in DEFAULT_WATCHES {
-                let _ = db::add_watch(&state.db, telegram_id, address, Some(label));
+                let _ = db::add_watch_with_sort_order(
+                    &state.db,
+                    telegram_id,
+                    address,
+                    Some(label),
+                    1000,
+                );
             }
         }
     }

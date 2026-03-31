@@ -93,6 +93,7 @@ pub fn init_db(path: &str) -> Result<DbPool> {
 
     create_tables(&conn)?;
     create_indexes(&conn)?;
+    run_migrations(&conn)?;
 
     info!(path, "Database initialized");
     Ok(Arc::new(Mutex::new(conn)))
@@ -193,6 +194,24 @@ fn create_indexes(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Run incremental schema migrations. Each migration is idempotent.
+fn run_migrations(conn: &Connection) -> Result<()> {
+    // Migration: add sort_order column to watched_addresses
+    // Default 0 for existing rows (user watches). Treasury/Charity get 1000 at insert time.
+    let has_sort_order: bool = conn
+        .prepare("SELECT sort_order FROM watched_addresses LIMIT 0")
+        .is_ok();
+
+    if !has_sort_order {
+        conn.execute_batch(
+            "ALTER TABLE watched_addresses ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;",
+        )?;
+        info!("Migration: added sort_order column to watched_addresses");
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Helper: parse NaiveDateTime from SQLite text
 // ---------------------------------------------------------------------------
@@ -263,10 +282,20 @@ pub fn add_watch(
     address: &str,
     label: Option<&str>,
 ) -> Result<bool> {
+    add_watch_with_sort_order(db, telegram_id, address, label, 0)
+}
+
+pub fn add_watch_with_sort_order(
+    db: &DbPool,
+    telegram_id: i64,
+    address: &str,
+    label: Option<&str>,
+    sort_order: i32,
+) -> Result<bool> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
     let inserted = conn.execute(
-        "INSERT OR IGNORE INTO watched_addresses (telegram_id, address, label) VALUES (?1, ?2, ?3)",
-        params![telegram_id, address, label],
+        "INSERT OR IGNORE INTO watched_addresses (telegram_id, address, label, sort_order) VALUES (?1, ?2, ?3, ?4)",
+        params![telegram_id, address, label, sort_order],
     )?;
     Ok(inserted > 0)
 }
@@ -284,7 +313,7 @@ pub fn get_watches_for_user(db: &DbPool, telegram_id: i64) -> Result<Vec<Watched
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
     let mut stmt = conn.prepare(
         "SELECT id, telegram_id, address, label, added_at, last_stake_at, last_stake_height, last_alert_at
-         FROM watched_addresses WHERE telegram_id = ?1 ORDER BY added_at",
+         FROM watched_addresses WHERE telegram_id = ?1 ORDER BY sort_order ASC, added_at DESC",
     )?;
     let rows = stmt
         .query_map(params![telegram_id], |row| {

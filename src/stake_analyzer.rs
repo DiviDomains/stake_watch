@@ -10,6 +10,22 @@ use crate::rpc::RpcClient;
 use crate::utils::satoshi_to_divi;
 
 // ---------------------------------------------------------------------------
+// Known non-staking addresses that receive block reward payments
+// ---------------------------------------------------------------------------
+
+pub const TREASURY_ADDRESS: &str = "DPhJsztbZafDc1YeyrRqSjmKjkmLJpQpUn";
+pub const CHARITY_ADDRESS: &str = "DPujt2XAdHyRcZNB5ySZBBVKjzY2uXZGYq";
+
+/// Return the appropriate event type for a coinbase output to the given address.
+/// Treasury and Charity receive "payment" type; all others receive "stake".
+pub fn event_type_for_address(address: &str) -> &'static str {
+    match address {
+        TREASURY_ADDRESS | CHARITY_ADDRESS => "payment",
+        _ => "stake",
+    }
+}
+
+// ---------------------------------------------------------------------------
 // StakeAnalyzer
 // ---------------------------------------------------------------------------
 
@@ -296,11 +312,12 @@ impl StakeAnalyzer {
                     let mut recorded = 0u32;
                     let mut latest_height: Option<u64> = None;
 
+                    let evt_type = event_type_for_address(address);
                     for (height, reward, txid) in &stake_blocks {
                         match crate::db::record_stake_event(
                             db, address, txid, *height,
                             "", // block hash not available from deltas
-                            *reward, "stake",
+                            *reward, evt_type,
                         ) {
                             Ok(true) => {
                                 recorded += 1;
@@ -389,7 +406,8 @@ impl StakeAnalyzer {
                 },
             };
 
-            // Record up to 100 stake events
+            // Record up to 100 events
+            let evt_type = event_type_for_address(address);
             if recorded < 100 {
                 match db::record_stake_event(
                     db,
@@ -398,7 +416,7 @@ impl StakeAnalyzer {
                     delta.height,
                     &block_hash,
                     delta.satoshis,
-                    "stake",
+                    evt_type,
                 ) {
                     Ok(true) => {
                         recorded += 1;
@@ -407,7 +425,8 @@ impl StakeAnalyzer {
                             txid = %delta.txid,
                             height = delta.height,
                             amount = %satoshi_to_divi(delta.satoshis),
-                            "Backfilled stake event"
+                            event_type = evt_type,
+                            "Backfilled event"
                         );
                     }
                     Ok(false) => {
@@ -417,7 +436,7 @@ impl StakeAnalyzer {
                         warn!(
                             txid = %delta.txid,
                             error = %e,
-                            "Failed to record backfilled stake"
+                            "Failed to record backfilled event"
                         );
                     }
                 }

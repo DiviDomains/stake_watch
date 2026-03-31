@@ -33,6 +33,8 @@ pub fn router(state: Arc<WebAppState>) -> Router {
         .route("/watches/{address}/stakes", get(get_stakes))
         .route("/alerts", get(get_alerts).post(add_alert))
         .route("/alerts/{alert_type}", delete(remove_alert))
+        // Admin endpoints
+        .route("/admin/users", get(get_admin_users))
         // Public explorer endpoints
         .route("/blocks", get(get_blocks))
         .route("/blocks/{hash}", get(get_block))
@@ -68,7 +70,8 @@ fn get_telegram_user(headers: &HeaderMap, state: &WebAppState) -> Option<auth::T
     if let Ok(count) = db::get_watch_count_for_user(&state.db, user.id) {
         if count == 0 {
             for (address, label) in DEFAULT_WATCHES {
-                let _ = db::add_watch(&state.db, user.id, address, Some(label));
+                let _ =
+                    db::add_watch_with_sort_order(&state.db, user.id, address, Some(label), 1000);
             }
         }
     }
@@ -118,6 +121,7 @@ struct MeResponse {
     username: Option<String>,
     watch_count: u32,
     max_watches: u32,
+    is_admin: bool,
 }
 
 #[derive(Serialize)]
@@ -315,12 +319,15 @@ async fn get_me(
 
     let watch_count = db::get_watch_count_for_user(&state.db, user.id).map_err(internal_error)?;
 
+    let is_admin = state.secrets.is_admin(user.id);
+
     Ok(Json(MeResponse {
         id: user.id,
         first_name: user.first_name,
         username: user.username,
         watch_count,
         max_watches: state.config.general.max_watches_per_user,
+        is_admin,
     }))
 }
 
@@ -994,6 +1001,77 @@ async fn get_network(
         block_count,
         explorer_url: state.explorer_url.clone(),
     }))
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/admin/users
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct AdminUserResponse {
+    telegram_id: i64,
+    username: Option<String>,
+    created_at: String,
+    watch_count: u32,
+    watches: Vec<AdminWatchInfo>,
+    alert_subscriptions: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct AdminWatchInfo {
+    address: String,
+    label: Option<String>,
+    added_at: String,
+    last_stake_at: Option<String>,
+}
+
+async fn get_admin_users(
+    State(state): State<Arc<WebAppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<AdminUserResponse>>, (StatusCode, Json<ApiError>)> {
+    let user = get_telegram_user(&headers, &state).ok_or_else(unauthorized)?;
+
+    if !state.secrets.is_admin(user.id) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ApiError {
+                error: "Admin access required".to_string(),
+            }),
+        ));
+    }
+
+    let users = db::get_all_users(&state.db).map_err(internal_error)?;
+
+    let mut result = Vec::with_capacity(users.len());
+    for u in &users {
+        let watches = db::get_watches_for_user(&state.db, u.telegram_id).map_err(internal_error)?;
+        let watch_count = watches.len() as u32;
+        let watch_infos: Vec<AdminWatchInfo> = watches
+            .iter()
+            .map(|w| AdminWatchInfo {
+                address: w.address.clone(),
+                label: w.label.clone(),
+                added_at: w.added_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+                last_stake_at: w
+                    .last_stake_at
+                    .map(|ts| ts.format("%Y-%m-%d %H:%M:%S").to_string()),
+            })
+            .collect();
+
+        let subs = db::get_subscriptions_for_user(&state.db, u.telegram_id).unwrap_or_default();
+        let alert_types: Vec<String> = subs.into_iter().map(|s| s.alert_type).collect();
+
+        result.push(AdminUserResponse {
+            telegram_id: u.telegram_id,
+            username: u.telegram_username.clone(),
+            created_at: u.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+            watch_count,
+            watches: watch_infos,
+            alert_subscriptions: alert_types,
+        });
+    }
+
+    Ok(Json(result))
 }
 
 // ---------------------------------------------------------------------------
