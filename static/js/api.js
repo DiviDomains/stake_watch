@@ -88,7 +88,7 @@ export const api = {
 
     getTx: (txid) => fetchApi(`/tx/${encodeURIComponent(txid)}`),
 
-    getAddress: (address) => fetchApi(`/address/${encodeURIComponent(address)}`),
+    getAddress: (address, limit) => fetchApi(`/address/${encodeURIComponent(address)}${limit ? `?limit=${limit}` : ''}`),
 
     getVaultBalance: (address) => fetchApi(`/address/${encodeURIComponent(address)}/vault`),
 

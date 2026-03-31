@@ -242,16 +242,35 @@ export async function renderAddressDetail(container, address) {
                 downloadJson({ address, analysis: a, stakes: stakeList }, `stakes-${address}.json`);
             });
         }
-        if (dlCsvBtn && stakeList.length > 0) {
-            const csvRows = stakeList.map(s => [
-                s.block_height || s.height || '',
-                s.txid || '',
-                s.amount_satoshis != null ? (s.amount_satoshis / 1e8).toFixed(8) : (s.amount_divi || ''),
-                s.event_type || '',
-                s.detected_at || '',
-            ]);
-            dlCsvBtn.addEventListener('click', () => {
-                downloadCsv(csvRows, ['block_height', 'txid', 'amount_divi', 'event_type', 'detected_at'], `stakes-${address}.csv`);
+        if (dlCsvBtn) {
+            dlCsvBtn.addEventListener('click', async () => {
+                dlCsvBtn.textContent = 'Fetching all transactions...';
+                dlCsvBtn.disabled = true;
+                try {
+                    // Fetch ALL deltas (pass high limit to get everything)
+                    const addrData = await api.getAddress(address, 100000);
+                    const allDeltas = addrData?.recent_deltas || [];
+                    // Deduplicate by txid
+                    const seen = new Set();
+                    const unique = [];
+                    for (const d of allDeltas) {
+                        if (!seen.has(d.txid)) {
+                            seen.add(d.txid);
+                            unique.push(d);
+                        }
+                    }
+                    const csvRows = unique.map(d => [
+                        d.height ?? '',
+                        d.txid ?? '',
+                        d.amount_divi ?? '',
+                    ]);
+                    downloadCsv(csvRows, ['block_height', 'txid', 'amount_divi'], `stakes-${address}.csv`);
+                    dlCsvBtn.textContent = `Download CSV (${unique.length} events)`;
+                } catch (e) {
+                    dlCsvBtn.textContent = 'Download failed';
+                    window.showToast?.('CSV download failed: ' + e.message, 'error');
+                }
+                dlCsvBtn.disabled = false;
             });
         }
 

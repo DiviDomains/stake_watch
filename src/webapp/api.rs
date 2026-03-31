@@ -1112,7 +1112,12 @@ async fn get_tx(
 async fn get_address(
     State(state): State<Arc<WebAppState>>,
     Path(address): Path<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<AddressInfo>, (StatusCode, Json<ApiError>)> {
+    let delta_limit = query
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(50);
     let balance = state
         .rpc
         .get_address_balance(&address)
@@ -1130,7 +1135,7 @@ async fn get_address(
             Ok(deltas) => deltas
                 .into_iter()
                 .rev()
-                .take(50)
+                .take(delta_limit)
                 .map(|d| DeltaInfo {
                     txid: d.txid,
                     height: d.height,
@@ -1146,7 +1151,7 @@ async fn get_address(
             recent_deltas = vault_deltas
                 .into_iter()
                 .rev()
-                .take(50)
+                .take(delta_limit)
                 .map(|d| DeltaInfo {
                     txid: d.txid,
                     height: d.height,
