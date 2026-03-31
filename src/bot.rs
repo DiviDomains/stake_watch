@@ -117,6 +117,9 @@ async fn command_handler(
     let telegram_id = msg.chat.id.0;
     let username = msg.from.as_ref().and_then(|u| u.username.clone());
 
+    // Ensure user exists and has default watches on any first interaction
+    ensure_user_registered(&state, telegram_id, username.as_deref());
+
     let response = match cmd {
         Command::Start => handle_start(&state, telegram_id, username.as_deref()).await,
         Command::Help => handle_help(&state, telegram_id),
@@ -166,23 +169,22 @@ const DEFAULT_WATCHES: &[(&str, &str)] = &[
     ("DPujt2XAdHyRcZNB5ySZBBVKjzY2uXZGYq", "Divi Charity"),
 ];
 
+/// Ensure the user is registered and has default watches.
+/// Called on every command — idempotent (add_user and add_watch use INSERT OR IGNORE).
+fn ensure_user_registered(state: &BotState, telegram_id: i64, username: Option<&str>) {
+    let _ = db::add_user(&state.db, telegram_id, username);
+    for (address, label) in DEFAULT_WATCHES {
+        let _ = db::add_watch(&state.db, telegram_id, address, Some(label));
+    }
+}
+
 async fn handle_start(
     state: &BotState,
     telegram_id: i64,
     username: Option<&str>,
 ) -> Result<String> {
-    db::add_user(&state.db, telegram_id, username)?;
-
-    // Add default watches for new users (treasury + charity)
-    for (address, label) in DEFAULT_WATCHES {
-        let _ = db::add_watch(&state.db, telegram_id, address, Some(label));
-    }
-
-    info!(
-        telegram_id,
-        ?username,
-        "New user registered with default watches"
-    );
+    // User + defaults already ensured by ensure_user_registered
+    info!(telegram_id, ?username, "User started bot");
 
     Ok(concat!(
         "<b>Welcome to Stake Watch!</b>\n\n",
