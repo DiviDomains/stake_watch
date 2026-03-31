@@ -192,7 +192,9 @@ export async function renderBlockDetail(container, hashOrHeight) {
                 <div class="info-grid">
                     <div class="info-row">
                         <div class="info-label">Hash</div>
-                        <div class="info-value info-value-mono">${escapeHtml(block.hash)}</div>
+                        <div class="info-value info-value-mono">
+                            <a href="https://services.divi.domains/explorer/block/${escapeHtml(block.hash)}" target="_blank" style="color:var(--accent);text-decoration:none;">${escapeHtml(block.hash)}</a>
+                        </div>
                     </div>
                     <div class="info-row">
                         <div class="info-label">Height</div>
@@ -350,7 +352,9 @@ export async function renderTxDetail(container, txid) {
             <div class="card card-stagger">
                 <div class="info-row" style="border-bottom: none;">
                     <div class="info-label">Transaction ID</div>
-                    <div class="info-value info-value-mono">${escapeHtml(tx.txid)}</div>
+                    <div class="info-value info-value-mono">
+                        <a href="https://services.divi.domains/explorer/tx/${escapeHtml(tx.txid)}" target="_blank" style="color:var(--accent);text-decoration:none;">${escapeHtml(tx.txid)}</a>
+                    </div>
                 </div>
                 ${tx.blockhash ? `
                 <div class="info-row" style="border-bottom: none; margin-top: var(--space-sm);">

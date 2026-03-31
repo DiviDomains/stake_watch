@@ -17,13 +17,15 @@ import {
     escapeHtml,
     blockLink,
     txLink,
+    downloadJson,
+    downloadCsv,
 } from './helpers.js';
 
 export async function renderAddressDetail(container, address) {
     try {
         const [analysis, stakes] = await Promise.allSettled([
             api.getAnalysis(address),
-            api.getStakes(address, 100),
+            api.getStakes(address, 10000),
         ]);
 
         const a = analysis.status === 'fulfilled' ? analysis.value : null;
@@ -213,6 +215,15 @@ export async function renderAddressDetail(container, address) {
             html += `</div>`;
         }
 
+        // Download buttons for all stake data
+        if (stakeList.length > 0) {
+            html += `
+                <div style="display:flex; gap:8px; margin-top:var(--space-lg);" class="card-stagger">
+                    <button class="btn btn-ghost btn-sm" id="dl-json-btn">Download JSON</button>
+                    <button class="btn btn-ghost btn-sm" id="dl-csv-btn">Download CSV (${stakeList.length} events)</button>
+                </div>`;
+        }
+
         // Unwatch button
         html += `
             <button class="btn btn-danger btn-full mt-lg card-stagger"
@@ -223,7 +234,26 @@ export async function renderAddressDetail(container, address) {
         html += `</div>`;
         container.innerHTML = html;
 
-        // Chart removed — data shown in stakes table below
+        // Wire up download buttons
+        const dlJsonBtn = document.getElementById('dl-json-btn');
+        const dlCsvBtn = document.getElementById('dl-csv-btn');
+        if (dlJsonBtn && stakeList.length > 0) {
+            dlJsonBtn.addEventListener('click', () => {
+                downloadJson({ address, analysis: a, stakes: stakeList }, `stakes-${address}.json`);
+            });
+        }
+        if (dlCsvBtn && stakeList.length > 0) {
+            const csvRows = stakeList.map(s => [
+                s.block_height || s.height || '',
+                s.txid || '',
+                s.amount_satoshis != null ? (s.amount_satoshis / 1e8).toFixed(8) : (s.amount_divi || ''),
+                s.event_type || '',
+                s.detected_at || '',
+            ]);
+            dlCsvBtn.addEventListener('click', () => {
+                downloadCsv(csvRows, ['block_height', 'txid', 'amount_divi', 'event_type', 'detected_at'], `stakes-${address}.csv`);
+            });
+        }
 
         // Initialize calculator if present
         if (document.getElementById('staking-calculator')) {

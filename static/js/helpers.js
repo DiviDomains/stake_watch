@@ -151,23 +151,36 @@ export function blockLink(heightOrHash, displayText, cssClass = '') {
 }
 
 /**
- * Trigger a JSON file download in the browser.
+ * Trigger a file download. Uses data URI instead of blob URL
+ * because Telegram WebView doesn't support blob: URLs.
  */
-export function downloadJson(data, filename) {
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
+function triggerDownload(content, mimeType, filename) {
+    const dataUri = `data:${mimeType};charset=utf-8,` + encodeURIComponent(content);
+
+    // In Telegram WebView, use openLink to open in external browser
+    if (window.Telegram?.WebApp?.openLink) {
+        window.Telegram.WebApp.openLink(dataUri);
+        return;
+    }
+
+    // Standard browser: use anchor element
     const a = document.createElement('a');
-    a.href = url;
+    a.href = dataUri;
     a.download = filename;
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    document.body.removeChild(a);
 }
 
 /**
- * Trigger a CSV file download in the browser.
- * @param {Array<Array<string|number>>} rows - Array of row arrays
- * @param {string[]} headers - Column header names
- * @param {string} filename - Download filename
+ * Trigger a JSON file download.
+ */
+export function downloadJson(data, filename) {
+    triggerDownload(JSON.stringify(data, null, 2), 'application/json', filename);
+}
+
+/**
+ * Trigger a CSV file download.
  */
 export function downloadCsv(rows, headers, filename) {
     const escape = (v) => {
@@ -177,11 +190,5 @@ export function downloadCsv(rows, headers, filename) {
             : s;
     };
     const csv = [headers.map(escape).join(','), ...rows.map(r => r.map(escape).join(','))].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
+    triggerDownload(csv, 'text/csv', filename);
 }

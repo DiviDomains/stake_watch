@@ -797,10 +797,16 @@ async fn get_stakes(
     State(state): State<Arc<WebAppState>>,
     headers: HeaderMap,
     Path(address): Path<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<Vec<StakeResponse>>, (StatusCode, Json<ApiError>)> {
     let _user = get_telegram_user(&headers, &state).ok_or_else(unauthorized)?;
 
-    let stakes = db::get_recent_stakes(&state.db, &address, 100).map_err(internal_error)?;
+    let limit = query
+        .get("limit")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(100)
+        .min(10000);
+    let stakes = db::get_recent_stakes(&state.db, &address, limit).map_err(internal_error)?;
 
     let result: Vec<StakeResponse> = stakes
         .into_iter()
