@@ -199,6 +199,7 @@ struct StakeResponse {
     txid: String,
     block_height: u64,
     block_hash: String,
+    amount_satoshis: i64,
     amount_divi: String,
     event_type: String,
     detected_at: String,
@@ -602,7 +603,10 @@ async fn get_divi_price() -> Result<Json<PriceResponse>, (StatusCode, Json<ApiEr
     }
 
     // Fetch from CoinGecko
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .user_agent("stake_watch/1.0")
+        .build()
+        .map_err(|e| internal_error(format!("HTTP client error: {e}")))?;
     let resp = client
         .get("https://api.coingecko.com/api/v3/simple/price?ids=divi&vs_currencies=usd")
         .timeout(std::time::Duration::from_secs(10))
@@ -610,12 +614,18 @@ async fn get_divi_price() -> Result<Json<PriceResponse>, (StatusCode, Json<ApiEr
         .await
         .map_err(|e| internal_error(format!("CoinGecko request failed: {e}")))?;
 
-    let body: serde_json::Value = resp
-        .json()
+    let text = resp
+        .text()
         .await
+        .map_err(|e| internal_error(format!("CoinGecko read failed: {e}")))?;
+
+    info!("CoinGecko response: {text}");
+
+    let body: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| internal_error(format!("CoinGecko parse failed: {e}")))?;
 
     let price = body["divi"]["usd"].as_f64().unwrap_or(0.0);
+    info!("DIVI price: {price}");
 
     // Update cache
     if let Ok(mut guard) = CACHE.lock() {
@@ -790,6 +800,7 @@ async fn get_stakes(
             txid: s.txid.clone(),
             block_height: s.block_height,
             block_hash: s.block_hash,
+            amount_satoshis: s.amount_satoshis,
             amount_divi: utils::satoshi_to_divi(s.amount_satoshis),
             event_type: s.event_type,
             detected_at: s.detected_at.format("%Y-%m-%d %H:%M:%S").to_string(),
