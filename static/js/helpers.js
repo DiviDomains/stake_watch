@@ -149,3 +149,39 @@ export function blockLink(heightOrHash, displayText, cssClass = '') {
     const text = displayText || heightOrHash;
     return `<span class="${cssClass || 'text-accent text-mono'}" style="cursor:pointer" onclick="navigate('block', { hash: '${escapeHtml(String(heightOrHash))}' })">${escapeHtml(String(text))}</span>`;
 }
+
+/**
+ * Trigger a JSON file download in the browser.
+ */
+export function downloadJson(data, filename) {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+/**
+ * Trigger a CSV file download in the browser.
+ * @param {Array<Array<string|number>>} rows - Array of row arrays
+ * @param {string[]} headers - Column header names
+ * @param {string} filename - Download filename
+ */
+export function downloadCsv(rows, headers, filename) {
+    const escape = (v) => {
+        const s = String(v ?? '');
+        return s.includes(',') || s.includes('"') || s.includes('\n')
+            ? `"${s.replace(/"/g, '""')}"`
+            : s;
+    };
+    const csv = [headers.map(escape).join(','), ...rows.map(r => r.map(escape).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+}

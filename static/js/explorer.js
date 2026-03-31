@@ -17,7 +17,13 @@ import {
     addressLink,
     txLink,
     blockLink,
+    downloadJson,
+    downloadCsv,
 } from './helpers.js';
+
+// Expose download helpers globally so inline onclick handlers can call them
+window.downloadJson = downloadJson;
+window.downloadCsv = downloadCsv;
 
 // Track active SSE connection so we can close it on navigation
 let activeBlockFeed = null;
@@ -241,10 +247,20 @@ export async function renderBlockDetail(container, hashOrHeight) {
                             const vinAddrDisplay = vinAddrs.length > 0
                                 ? vinAddrs.map(a => addressLink(a, 'text-mono text-xs text-accent')).join(', ')
                                 : '<span class="text-hint">Unknown</span>';
-                            html += `<div class="tx-io-row" style="padding: 3px 0;">
-                                <span class="text-xs">From: ${vinAddrDisplay}${isVinVault ? ' <span class="vault-badge" style="font-size:0.6rem">Vault</span>' : ''}</span>
-                                ${vinVal ? `<span class="text-xs">${vinVal}</span>` : ''}
-                            </div>`;
+                            if (isVinVault && vinAddrs.length >= 2) {
+                                html += `<div class="tx-io-row" style="padding: 3px 0;">
+                                    <span class="text-xs">From: ${addressLink(vinAddrs[0], 'text-mono text-xs text-accent')} <span class="vault-badge" style="font-size:0.6rem">Owner</span></span>
+                                    ${vinVal ? `<span class="text-xs">${vinVal}</span>` : ''}
+                                </div>
+                                <div class="tx-io-row" style="padding: 1px 0;">
+                                    <span class="text-xs text-hint">Mgr: ${addressLink(vinAddrs[1], 'text-mono text-xs text-hint')}</span>
+                                </div>`;
+                            } else {
+                                html += `<div class="tx-io-row" style="padding: 3px 0;">
+                                    <span class="text-xs">From: ${vinAddrDisplay}</span>
+                                    ${vinVal ? `<span class="text-xs">${vinVal}</span>` : ''}
+                                </div>`;
+                            }
                         }
                     }
 
@@ -260,12 +276,21 @@ export async function renderBlockDetail(container, hashOrHeight) {
 
                         if (isEmpty) {
                             html += `<div class="tx-io-row" style="padding: 3px 0;"><span class="text-hint text-xs">PoS marker</span></div>`;
+                        } else if (isVault && addrs.length >= 2) {
+                            // Vault output: addresses[0] = owner, addresses[1] = manager
+                            html += `<div class="tx-io-row" style="padding: 3px 0;">
+                                <span class="text-xs">To: ${addressLink(addrs[0], 'text-mono text-xs text-accent')} <span class="vault-badge" style="font-size:0.6rem">Owner</span></span>
+                                <span class="text-xs text-success">${val}</span>
+                            </div>
+                            <div class="tx-io-row" style="padding: 1px 0;">
+                                <span class="text-xs text-hint">Mgr: ${addressLink(addrs[1], 'text-mono text-xs text-hint')}</span>
+                            </div>`;
                         } else {
                             const addrDisplay = addrs.length > 0
                                 ? addrs.map(a => addressLink(a, 'text-mono text-xs text-accent')).join(', ')
                                 : `<span class="text-hint text-xs">${spk.type || 'script'}</span>`;
                             html += `<div class="tx-io-row" style="padding: 3px 0;">
-                                <span class="text-xs">To: ${addrDisplay}${isVault ? ' <span class="vault-badge" style="font-size:0.6rem">Vault</span>' : ''}</span>
+                                <span class="text-xs">To: ${addrDisplay}</span>
                                 <span class="text-xs text-success">${val}</span>
                             </div>`;
                         }
@@ -277,6 +302,13 @@ export async function renderBlockDetail(container, hashOrHeight) {
                 html += `</div>`;
             }
         }
+
+        // Download button
+        window.__blockDownloadData = block;
+        html += `
+            <div style="display:flex; gap:8px; margin-top:var(--space-lg);">
+                <button class="btn btn-ghost btn-sm" onclick="downloadJson(window.__blockDownloadData, 'block-${block.height}.json')">Download JSON</button>
+            </div>`;
 
         html += `</div>`;
         container.innerHTML = html;
@@ -413,7 +445,16 @@ export async function renderTxDetail(container, txid) {
             html += `<div class="text-sm text-hint" style="padding: var(--space-sm) 0;">No outputs</div>`;
         }
 
-        html += `</div></div>`;
+        html += `</div>`;
+
+        // Download button
+        window.__txDownloadData = tx;
+        html += `
+            <div style="display:flex; gap:8px; margin-top:var(--space-lg);">
+                <button class="btn btn-ghost btn-sm" onclick="downloadJson(window.__txDownloadData, 'tx-${escapeHtml(txid.slice(0, 16))}.json')">Download JSON</button>
+            </div>`;
+
+        html += `</div>`;
         container.innerHTML = html;
 
     } catch (e) {
@@ -464,9 +505,13 @@ export async function renderAddressPage(container, address) {
                 </div>
             </div>`;
 
-        // Balances
+        // Balances — prefer vault_balance_divi from addrData if vaultData unavailable
         const regularBalance = addrData?.balance ?? 0;
-        const vaultBalance = vaultData?.balance ?? 0;
+        const vaultBalanceSats = vaultData?.balance ?? (
+            addrData?.vault_balance_divi != null
+                ? Math.round(parseFloat(addrData.vault_balance_divi) * 1e8)
+                : 0
+        );
         const totalReceived = addrData?.received ?? 0;
 
         html += `
@@ -478,8 +523,8 @@ export async function renderAddressPage(container, address) {
                     </div>
                     <div>
                         <div class="stat-value stat-value-sm">
-                            ${formatDiviShort(vaultBalance)}
-                            ${vaultBalance > 0 ? '<span class="vault-badge" style="margin-left:4px;">Vault</span>' : ''}
+                            ${formatDiviShort(vaultBalanceSats)}
+                            ${vaultBalanceSats > 0 ? '<span class="vault-badge" style="margin-left:4px;">Vault</span>' : ''}
                         </div>
                         <div class="stat-label">Vault Balance</div>
                     </div>
@@ -491,20 +536,14 @@ export async function renderAddressPage(container, address) {
                     <span class="text-sm text-mono text-hint">${formatDivi(totalReceived)}</span>
                 </div>
                 ` : ''}
+                ${regularBalance === 0 && vaultBalanceSats === 0 && totalReceived === 0 ? `
+                <div class="divider"></div>
+                <div class="text-xs text-hint" style="padding: var(--space-sm) 0;">
+                    This address has no indexed balance. It may be a <b>vault manager</b> address
+                    (vault balances are indexed under the owner address, not the manager).
+                </div>
+                ` : ''}
             </div>`;
-
-        // Recent transactions (if available in the response)
-        if (addrData?.transactions && addrData.transactions.length > 0) {
-            html += `<div class="section-title card-stagger">Recent Transactions</div>`;
-
-            for (const txid of addrData.transactions.slice(0, 20)) {
-                html += `
-                    <div class="card card-clickable card-stagger" style="padding: var(--space-md) var(--space-lg);"
-                         onclick="navigate('tx', { txid: '${escapeHtml(txid)}' })">
-                        <div class="tx-hash">${escapeHtml(txid)}</div>
-                    </div>`;
-            }
-        }
 
         // Watch this address button
         html += `
@@ -512,6 +551,57 @@ export async function renderAddressPage(container, address) {
                     onclick="quickWatch('${escapeHtml(address)}')">
                 Watch This Address
             </button>`;
+
+        // Recent transactions from recent_deltas
+        const deltas = addrData?.recent_deltas || [];
+        html += `<div class="section-title card-stagger">Recent Transactions</div>`;
+
+        if (deltas.length === 0) {
+            html += `<div class="card card-stagger"><div class="text-sm text-hint" style="padding: var(--space-sm) 0;">No transactions found</div></div>`;
+        } else {
+            for (const delta of deltas.slice(0, 50)) {
+                const amountSats = typeof delta.amount === 'number' ? delta.amount : parseInt(delta.amount, 10);
+                const isPositive = amountSats >= 0;
+                const amountDisplay = (isPositive ? '+' : '') + formatDivi(amountSats);
+                const amountClass = isPositive ? 'text-success' : 'text-danger';
+                const txid = delta.txid || '';
+                const height = delta.height != null ? delta.height : null;
+
+                html += `
+                    <div class="card card-stagger" style="padding: var(--space-sm) var(--space-lg);">
+                        <div class="flex-between" style="gap: var(--space-sm); align-items: center;">
+                            <div style="min-width:0; flex:1;">
+                                ${height != null ? `<div class="text-xs text-hint mb-sm">${blockLink(height, '#' + Number(height).toLocaleString())}</div>` : ''}
+                                <div class="tx-hash" style="cursor:pointer; font-size:0.75rem;"
+                                     onclick="navigate('tx', { txid: '${escapeHtml(txid)}' })">${escapeHtml(txid)}</div>
+                            </div>
+                            <div class="${amountClass} text-mono text-sm" style="white-space:nowrap; flex-shrink:0;">${amountDisplay}</div>
+                        </div>
+                    </div>`;
+            }
+        }
+
+        // Download buttons — store data in globals for onclick handlers
+        const addrDownloadData = {
+            address,
+            balance: addrData?.balance,
+            vault_balance: vaultBalanceSats,
+            received: addrData?.received,
+            recent_deltas: deltas,
+        };
+        window.__addrDownloadData = addrDownloadData;
+
+        const csvRows = deltas.slice(0, 50).map(d => [
+            d.height ?? '',
+            d.txid ?? '',
+            d.amount ?? '',
+        ]);
+
+        html += `
+            <div style="display:flex; gap:8px; margin-top:var(--space-lg);">
+                <button class="btn btn-ghost btn-sm" onclick="downloadJson(window.__addrDownloadData, 'address-${escapeHtml(address)}.json')">Download JSON</button>
+                <button class="btn btn-ghost btn-sm" onclick="downloadCsv(${JSON.stringify(csvRows)}, ['height','txid','amount'], 'address-${escapeHtml(address)}.csv')">Download CSV</button>
+            </div>`;
 
         html += `</div>`;
         container.innerHTML = html;
