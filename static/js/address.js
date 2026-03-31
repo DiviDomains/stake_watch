@@ -194,14 +194,16 @@ export async function renderAddressDetail(container, address) {
                 </div>`;
         } else {
             html += `<div class="card card-stagger" style="padding: var(--space-md) var(--space-lg);">`;
-            for (const stake of stakeList) {
+            const currentHeight = a?.current_height || 0;
+            for (const stake of stakeList.slice(0, 50)) {
                 const amount = stake.amount_satoshis
                     ? formatDivi(stake.amount_satoshis)
                     : formatDiviFloat(stake.amount || 0);
                 const height = stake.block_height || stake.height;
-                const time = stake.detected_at
-                    ? timeAgo(stake.detected_at)
-                    : timeAgo(stake.time);
+                // Use block height to compute time ago (not detected_at which is insertion time)
+                const blocksAgo = currentHeight > 0 ? currentHeight - height : 0;
+                const secsAgo = blocksAgo * 60;
+                const time = blocksAgo > 0 ? formatDuration(secsAgo) + ' ago' : '';
 
                 html += `
                     <div class="stake-row">
@@ -220,7 +222,7 @@ export async function renderAddressDetail(container, address) {
             html += `
                 <div style="display:flex; gap:8px; margin-top:var(--space-lg);" class="card-stagger">
                     <button class="btn btn-ghost btn-sm" id="dl-json-btn">Download JSON</button>
-                    <button class="btn btn-ghost btn-sm" id="dl-csv-btn">Download CSV (${stakeList.length} events)</button>
+                    <button class="btn btn-ghost btn-sm" id="dl-csv-btn">Download All CSV</button>
                 </div>`;
         }
 

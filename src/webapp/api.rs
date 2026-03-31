@@ -191,6 +191,7 @@ struct AnalysisResponse {
     last_stake_time: Option<i64>,
     last_stake_secs_ago: Option<u64>,
     health: String,
+    current_height: u64,
     explorer_url: String,
 }
 
@@ -785,6 +786,7 @@ async fn get_analysis(
             .map(|(_, secs)| (chrono::Utc::now().timestamp() - *secs as i64)),
         last_stake_secs_ago: last_stake_info.as_ref().map(|(_, secs)| *secs),
         health,
+        current_height,
         explorer_url: state.explorer_url.clone(),
     }))
 }
