@@ -208,24 +208,67 @@ export async function renderBlockDetail(container, hashOrHeight) {
                 </div>
             </div>`;
 
-        // Transaction list — API returns "transactions" array with {txid, ...} objects
-        const txList = block.transactions || (block.tx ? block.tx.map(t => typeof t === 'string' ? { txid: t } : t) : []);
+        // Transaction list with full inline detail
+        const txList = block.transactions || [];
         if (txList.length > 0) {
             html += `<div class="section-title card-stagger">Transactions</div>`;
 
             for (let i = 0; i < txList.length; i++) {
-                const txEntry = txList[i];
-                const txid = txEntry.txid || txEntry;
-                const label = i === 0 ? 'Coinbase' : i === 1 ? 'Coinstake' : `Tx ${i}`;
+                const tx = txList[i];
+                const txid = tx.txid || '';
+                const label = tx.label || (i === 0 ? 'Coinbase' : i === 1 ? 'Coinstake' : `Tx ${i}`);
+                const hasFullData = tx.vin && tx.vout;
 
-                html += `
-                    <div class="card card-clickable card-stagger" style="padding: var(--space-md) var(--space-lg);"
-                         onclick="navigate('tx', { txid: '${escapeHtml(txid)}' })">
-                        <div class="flex-between mb-sm">
-                            <span class="badge ${i <= 1 ? 'badge-neutral' : ''}">${label}</span>
-                        </div>
-                        <div class="tx-hash">${escapeHtml(txid)}</div>
-                    </div>`;
+                html += `<div class="card card-stagger" style="padding: var(--space-md) var(--space-lg);">`;
+                html += `<div class="flex-between mb-sm">
+                    <span class="badge ${i <= 1 ? 'badge-neutral' : ''}">${label}</span>
+                    <span class="text-hint text-xs">${formatDiviFloat(parseFloat(tx.total_output_divi || '0'))} DIVI</span>
+                </div>`;
+                html += `<div class="tx-hash" style="cursor:pointer" onclick="navigate('tx', { txid: '${escapeHtml(txid)}' })">${escapeHtml(txid)}</div>`;
+
+                if (hasFullData) {
+                    // Inline inputs → outputs
+                    html += `<div style="margin-top: var(--space-sm); font-size: 0.8rem;">`;
+
+                    // Inputs
+                    for (const vin of tx.vin) {
+                        if (vin.coinbase) {
+                            html += `<div class="tx-io-row" style="padding: 2px 0;"><span class="text-hint">Coinbase → New coins</span></div>`;
+                        } else {
+                            const vinAddr = vin.addresses ? vin.addresses[0] : '';
+                            const vinVal = vin.value != null ? formatDiviFloat(vin.value) : '';
+                            html += `<div class="tx-io-row" style="padding: 2px 0;">
+                                <span class="text-hint text-xs">← ${vinAddr ? addressLink(vinAddr, 'text-mono text-xs text-accent') : 'Unknown'}</span>
+                                ${vinVal ? `<span class="text-xs">${vinVal}</span>` : ''}
+                            </div>`;
+                        }
+                    }
+
+                    html += `<div style="padding: 2px 0; text-align: center; color: var(--hint);">↓</div>`;
+
+                    // Outputs
+                    for (const vout of tx.vout) {
+                        const spk = vout.scriptPubKey || {};
+                        const addrs = spk.addresses || [];
+                        const val = vout.value != null ? formatDiviFloat(vout.value) : '0';
+                        const isVault = spk.type === 'vault';
+                        const isEmpty = vout.value === 0 && addrs.length === 0;
+
+                        if (isEmpty) {
+                            html += `<div class="tx-io-row" style="padding: 2px 0;"><span class="text-hint text-xs">PoS marker (empty)</span></div>`;
+                        } else {
+                            html += `<div class="tx-io-row" style="padding: 2px 0;">
+                                <span>→ ${addrs.length > 0 ? addrs.map(a => addressLink(a, 'text-mono text-xs text-accent')).join(', ') : `<span class="text-hint text-xs">${spk.type || 'script'}</span>`}
+                                ${isVault ? '<span class="vault-badge" style="font-size:0.65rem">Vault</span>' : ''}</span>
+                                <span class="text-xs text-success">${val}</span>
+                            </div>`;
+                        }
+                    }
+
+                    html += `</div>`;
+                }
+
+                html += `</div>`;
             }
         }
 

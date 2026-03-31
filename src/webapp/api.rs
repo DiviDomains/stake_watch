@@ -235,7 +235,7 @@ struct BlockDetail {
     time: u64,
     size: u64,
     tx_count: usize,
-    transactions: Vec<TxSummary>,
+    transactions: Vec<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -939,25 +939,54 @@ async fn get_block(
 ) -> Result<Json<BlockDetail>, (StatusCode, Json<ApiError>)> {
     let block = state.rpc.get_block(&hash).await.map_err(internal_error)?;
 
+    // Fetch full transaction data for each tx in the block
     let mut transactions = Vec::with_capacity(block.tx.len());
-    for txid in &block.tx {
+    for (i, txid) in block.tx.iter().enumerate() {
         match state.rpc.get_raw_transaction(txid).await {
             Ok(tx) => {
                 let total_output: f64 = tx.vout.iter().map(|v| v.value).sum();
-                transactions.push(TxSummary {
-                    txid: tx.txid,
-                    vin_count: tx.vin.len(),
-                    vout_count: tx.vout.len(),
-                    total_output_divi: format!("{total_output:.8}"),
-                });
+                let label = match i {
+                    0 => "Coinbase".to_string(),
+                    1 => "Coinstake".to_string(),
+                    _ => format!("Tx {i}"),
+                };
+                transactions.push(serde_json::json!({
+                    "txid": tx.txid,
+                    "label": label,
+                    "vin_count": tx.vin.len(),
+                    "vout_count": tx.vout.len(),
+                    "total_output_divi": format!("{total_output:.8}"),
+                    "vin": tx.vin.iter().map(|v| {
+                        serde_json::json!({
+                            "coinbase": v.coinbase,
+                            "txid": v.txid,
+                            "vout": v.vout,
+                            "value": v.value,
+                        })
+                    }).collect::<Vec<_>>(),
+                    "vout": tx.vout.iter().map(|v| {
+                        serde_json::json!({
+                            "value": v.value,
+                            "n": v.n,
+                            "scriptPubKey": {
+                                "type": v.script_pub_key.script_type,
+                                "addresses": v.script_pub_key.addresses,
+                                "asm": v.script_pub_key.asm,
+                            }
+                        })
+                    }).collect::<Vec<_>>(),
+                }));
             }
             Err(_) => {
-                transactions.push(TxSummary {
-                    txid: txid.clone(),
-                    vin_count: 0,
-                    vout_count: 0,
-                    total_output_divi: "0.00000000".to_string(),
-                });
+                transactions.push(serde_json::json!({
+                    "txid": txid,
+                    "label": if i == 0 { "Coinbase" } else if i == 1 { "Coinstake" } else { "Tx" },
+                    "vin_count": 0,
+                    "vout_count": 0,
+                    "total_output_divi": "0.00000000",
+                    "vin": [],
+                    "vout": [],
+                }));
             }
         }
     }
