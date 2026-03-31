@@ -169,12 +169,16 @@ const DEFAULT_WATCHES: &[(&str, &str)] = &[
     ("DPujt2XAdHyRcZNB5ySZBBVKjzY2uXZGYq", "Divi Charity"),
 ];
 
-/// Ensure the user is registered and has default watches.
-/// Called on every command — idempotent (add_user and add_watch use INSERT OR IGNORE).
+/// Ensure the user is registered. Add default watches only if user has zero watches
+/// (don't re-add defaults that the user deliberately removed).
 fn ensure_user_registered(state: &BotState, telegram_id: i64, username: Option<&str>) {
     let _ = db::add_user(&state.db, telegram_id, username);
-    for (address, label) in DEFAULT_WATCHES {
-        let _ = db::add_watch(&state.db, telegram_id, address, Some(label));
+    if let Ok(count) = db::get_watch_count_for_user(&state.db, telegram_id) {
+        if count == 0 {
+            for (address, label) in DEFAULT_WATCHES {
+                let _ = db::add_watch(&state.db, telegram_id, address, Some(label));
+            }
+        }
     }
 }
 

@@ -49,12 +49,31 @@ pub fn router(state: Arc<WebAppState>) -> Router {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn get_telegram_user(
-    headers: &HeaderMap,
-    secrets: &crate::config::Secrets,
-) -> Option<auth::TelegramUser> {
+/// Default watched addresses added for every new user.
+const DEFAULT_WATCHES: &[(&str, &str)] = &[
+    ("DPhJsztbZafDc1YeyrRqSjmKjkmLJpQpUn", "Divi Treasury"),
+    ("DPujt2XAdHyRcZNB5ySZBBVKjzY2uXZGYq", "Divi Charity"),
+];
+
+/// Validate initData and ensure the user is registered with default watches.
+fn get_telegram_user(headers: &HeaderMap, state: &WebAppState) -> Option<auth::TelegramUser> {
     let init_data = headers.get("X-Telegram-Init-Data")?.to_str().ok()?;
-    auth::validate_init_data(init_data, &secrets.telegram_bot_token)
+    let user = auth::validate_init_data(init_data, &state.secrets.telegram_bot_token)?;
+
+    // Ensure user exists
+    let _ = db::add_user(&state.db, user.id, user.username.as_deref());
+
+    // Only add default watches if user has zero watches (don't re-add
+    // defaults that the user deliberately removed)
+    if let Ok(count) = db::get_watch_count_for_user(&state.db, user.id) {
+        if count == 0 {
+            for (address, label) in DEFAULT_WATCHES {
+                let _ = db::add_watch(&state.db, user.id, address, Some(label));
+            }
+        }
+    }
+
+    Some(user)
 }
 
 fn unauthorized() -> (StatusCode, Json<ApiError>) {
@@ -289,7 +308,7 @@ async fn get_me(
     State(state): State<Arc<WebAppState>>,
     headers: HeaderMap,
 ) -> Result<Json<MeResponse>, (StatusCode, Json<ApiError>)> {
-    let user = get_telegram_user(&headers, &state.secrets).ok_or_else(unauthorized)?;
+    let user = get_telegram_user(&headers, &state).ok_or_else(unauthorized)?;
 
     // Ensure user exists in DB
     let _ = db::add_user(&state.db, user.id, user.username.as_deref());
@@ -313,7 +332,7 @@ async fn get_watches(
     State(state): State<Arc<WebAppState>>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<WatchResponse>>, (StatusCode, Json<ApiError>)> {
-    let user = get_telegram_user(&headers, &state.secrets).ok_or_else(unauthorized)?;
+    let user = get_telegram_user(&headers, &state).ok_or_else(unauthorized)?;
 
     let watches = db::get_watches_for_user(&state.db, user.id).map_err(internal_error)?;
 
@@ -357,7 +376,7 @@ async fn add_watch(
     headers: HeaderMap,
     Json(body): Json<AddWatchRequest>,
 ) -> Result<Json<SuccessResponse>, (StatusCode, Json<ApiError>)> {
-    let user = get_telegram_user(&headers, &state.secrets).ok_or_else(unauthorized)?;
+    let user = get_telegram_user(&headers, &state).ok_or_else(unauthorized)?;
 
     let address = body.address.trim();
     if address.is_empty() {
@@ -430,7 +449,7 @@ async fn remove_watch(
     headers: HeaderMap,
     Path(address): Path<String>,
 ) -> Result<Json<SuccessResponse>, (StatusCode, Json<ApiError>)> {
-    let user = get_telegram_user(&headers, &state.secrets).ok_or_else(unauthorized)?;
+    let user = get_telegram_user(&headers, &state).ok_or_else(unauthorized)?;
 
     let removed = db::remove_watch(&state.db, user.id, &address).map_err(internal_error)?;
 
@@ -455,7 +474,7 @@ async fn get_analysis(
     headers: HeaderMap,
     Path(address): Path<String>,
 ) -> Result<Json<AnalysisResponse>, (StatusCode, Json<ApiError>)> {
-    let user = get_telegram_user(&headers, &state.secrets).ok_or_else(unauthorized)?;
+    let user = get_telegram_user(&headers, &state).ok_or_else(unauthorized)?;
 
     // Fetch balance -- try regular first, fall back to vault
     let (balance, is_vault) = {
@@ -596,7 +615,7 @@ async fn get_stakes(
     headers: HeaderMap,
     Path(address): Path<String>,
 ) -> Result<Json<Vec<StakeResponse>>, (StatusCode, Json<ApiError>)> {
-    let _user = get_telegram_user(&headers, &state.secrets).ok_or_else(unauthorized)?;
+    let _user = get_telegram_user(&headers, &state).ok_or_else(unauthorized)?;
 
     let stakes = db::get_recent_stakes(&state.db, &address, 100).map_err(internal_error)?;
 
@@ -624,7 +643,7 @@ async fn get_alerts(
     State(state): State<Arc<WebAppState>>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<AlertResponse>>, (StatusCode, Json<ApiError>)> {
-    let user = get_telegram_user(&headers, &state.secrets).ok_or_else(unauthorized)?;
+    let user = get_telegram_user(&headers, &state).ok_or_else(unauthorized)?;
 
     let subs = db::get_subscriptions_for_user(&state.db, user.id).map_err(internal_error)?;
 
@@ -649,7 +668,7 @@ async fn add_alert(
     headers: HeaderMap,
     Json(body): Json<AddAlertRequest>,
 ) -> Result<Json<SuccessResponse>, (StatusCode, Json<ApiError>)> {
-    let user = get_telegram_user(&headers, &state.secrets).ok_or_else(unauthorized)?;
+    let user = get_telegram_user(&headers, &state).ok_or_else(unauthorized)?;
 
     let alert_type = body.alert_type.trim().to_lowercase();
     if !crate::alert_analyzer::VALID_ALERT_TYPES.contains(&alert_type.as_str()) {
@@ -683,7 +702,7 @@ async fn remove_alert(
     headers: HeaderMap,
     Path(alert_type): Path<String>,
 ) -> Result<Json<SuccessResponse>, (StatusCode, Json<ApiError>)> {
-    let user = get_telegram_user(&headers, &state.secrets).ok_or_else(unauthorized)?;
+    let user = get_telegram_user(&headers, &state).ok_or_else(unauthorized)?;
 
     let removed =
         db::remove_alert_subscription(&state.db, user.id, &alert_type).map_err(internal_error)?;
