@@ -1,101 +1,104 @@
 // ============================================================
 // Stake Watch -- Chart.js Configuration
 // ============================================================
-// Creates a reward history line chart using Telegram theme
-// colors and appropriate styling for a mobile crypto dashboard.
+// Creates a reward history chart showing daily rewards as bars
+// and cumulative total as a line.
 // ============================================================
 
 /**
- * Create a stake reward line chart on the given canvas element.
- *
- * @param {HTMLCanvasElement} canvas  The target canvas
- * @param {Array} stakes             Array of stake events (sorted newest-first from API)
+ * Create a stake reward history chart.
+ * @param {HTMLCanvasElement} canvas
+ * @param {Array} stakes - Array of stake events (sorted newest-first from API)
  */
 export function createStakeChart(canvas, stakes) {
     if (!stakes || stakes.length === 0) return null;
 
-    // Reverse to chronological order (oldest first)
+    // Sort oldest first
     const chronological = [...stakes].reverse();
 
-    // Build chart data
-    const labels = [];
-    const rewards = [];
-    const cumulative = [];
-    let runningTotal = 0;
+    // Aggregate rewards by day (using block height as proxy: 1440 blocks ≈ 1 day)
+    const BLOCKS_PER_DAY = 1440;
+    const firstHeight = chronological[0].block_height || chronological[0].height || 0;
+    const dailyMap = new Map(); // dayIndex -> { totalReward, count }
 
     for (const stake of chronological) {
-        // Use block height as label
         const height = stake.block_height || stake.height || 0;
-        labels.push('#' + Number(height).toLocaleString());
-
-        // Convert to DIVI
         let rewardDivi;
         if (stake.amount_satoshis != null) {
             rewardDivi = stake.amount_satoshis / 1e8;
-        } else if (stake.amount != null) {
-            rewardDivi = stake.amount;
+        } else if (stake.amount_divi != null) {
+            rewardDivi = parseFloat(stake.amount_divi);
         } else {
             rewardDivi = 0;
         }
 
-        rewards.push(rewardDivi);
-        runningTotal += rewardDivi;
-        cumulative.push(runningTotal);
+        const dayIndex = Math.floor((height - firstHeight) / BLOCKS_PER_DAY);
+        if (!dailyMap.has(dayIndex)) {
+            dailyMap.set(dayIndex, { totalReward: 0, count: 0, height });
+        }
+        const day = dailyMap.get(dayIndex);
+        day.totalReward += rewardDivi;
+        day.count += 1;
     }
 
-    // Get computed CSS variables from the document for Telegram theme colors
+    // Build chart data from daily aggregates
+    const days = Array.from(dailyMap.entries()).sort((a, b) => a[0] - b[0]);
+    const labels = [];
+    const dailyRewards = [];
+    const cumulative = [];
+    let runningTotal = 0;
+
+    for (const [dayIdx, data] of days) {
+        const daysAgo = days[days.length - 1][0] - dayIdx;
+        labels.push(daysAgo === 0 ? 'Today' : daysAgo === 1 ? '1d ago' : `${daysAgo}d ago`);
+        dailyRewards.push(Math.round(data.totalReward * 100) / 100);
+        runningTotal += data.totalReward;
+        cumulative.push(Math.round(runningTotal * 100) / 100);
+    }
+
+    // Theme colors
     const style = getComputedStyle(document.documentElement);
     const accentColor = style.getPropertyValue('--accent').trim() || '#34d399';
     const hintColor = style.getPropertyValue('--hint').trim() || '#7c7e8a';
     const borderColor = style.getPropertyValue('--border').trim() || 'rgba(255,255,255,0.1)';
     const textColor = style.getPropertyValue('--text').trim() || '#e8e9ed';
 
-    // Parse accent color for gradient fill
     const accentRgb = hexToRgb(accentColor) || { r: 52, g: 211, b: 153 };
     const gradientFill = canvas.getContext('2d').createLinearGradient(0, 0, 0, canvas.height);
-    gradientFill.addColorStop(0, `rgba(${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b}, 0.3)`);
+    gradientFill.addColorStop(0, `rgba(${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b}, 0.25)`);
     gradientFill.addColorStop(1, `rgba(${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b}, 0.02)`);
 
-    const datasets = [];
-
-    // Show individual rewards as bar-like points if fewer than 30 stakes
-    if (chronological.length <= 30) {
-        datasets.push({
-            label: 'Reward (DIVI)',
-            data: rewards,
-            type: 'bar',
-            backgroundColor: `rgba(${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b}, 0.4)`,
-            borderColor: accentColor,
-            borderWidth: 1,
-            borderRadius: 3,
-            yAxisID: 'y',
-            order: 2,
-        });
-    }
-
-    // Cumulative line
-    datasets.push({
-        label: 'Total Rewards (DIVI)',
-        data: cumulative,
-        type: 'line',
-        borderColor: accentColor,
-        backgroundColor: gradientFill,
-        borderWidth: 2,
-        pointRadius: chronological.length > 20 ? 0 : 3,
-        pointHoverRadius: 5,
-        pointBackgroundColor: accentColor,
-        pointBorderColor: accentColor,
-        fill: true,
-        tension: 0.3,
-        yAxisID: 'y1',
-        order: 1,
-    });
-
     const chart = new Chart(canvas, {
-        type: 'bar', // base type; datasets override
+        type: 'bar',
         data: {
             labels,
-            datasets,
+            datasets: [
+                {
+                    label: 'Daily Rewards (DIVI)',
+                    data: dailyRewards,
+                    type: 'bar',
+                    backgroundColor: `rgba(${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b}, 0.5)`,
+                    borderColor: accentColor,
+                    borderWidth: 1,
+                    borderRadius: 4,
+                    yAxisID: 'y',
+                    order: 2,
+                },
+                {
+                    label: 'Cumulative (DIVI)',
+                    data: cumulative,
+                    type: 'line',
+                    borderColor: `rgba(${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b}, 0.6)`,
+                    backgroundColor: gradientFill,
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                    fill: true,
+                    tension: 0.3,
+                    yAxisID: 'y1',
+                    order: 1,
+                },
+            ],
         },
         options: {
             responsive: true,
@@ -106,15 +109,12 @@ export function createStakeChart(canvas, stakes) {
             },
             plugins: {
                 legend: {
-                    display: datasets.length > 1,
+                    display: true,
                     position: 'bottom',
                     labels: {
                         color: hintColor,
-                        font: {
-                            family: "'DM Sans', sans-serif",
-                            size: 11,
-                        },
-                        padding: 12,
+                        font: { family: "'DM Sans', sans-serif", size: 10 },
+                        padding: 10,
                         usePointStyle: true,
                         pointStyleWidth: 8,
                     },
@@ -125,21 +125,14 @@ export function createStakeChart(canvas, stakes) {
                     bodyColor: textColor,
                     borderColor: borderColor,
                     borderWidth: 1,
-                    titleFont: {
-                        family: "'JetBrains Mono', monospace",
-                        size: 11,
-                    },
-                    bodyFont: {
-                        family: "'JetBrains Mono', monospace",
-                        size: 12,
-                    },
+                    titleFont: { family: "'JetBrains Mono', monospace", size: 11 },
+                    bodyFont: { family: "'JetBrains Mono', monospace", size: 12 },
                     padding: 10,
                     cornerRadius: 8,
-                    displayColors: false,
                     callbacks: {
-                        label: function(context) {
-                            const val = context.parsed.y;
-                            return context.dataset.label + ': ' + val.toLocaleString('en-US', {
+                        label: function(ctx) {
+                            const val = ctx.parsed.y;
+                            return ctx.dataset.label + ': ' + val.toLocaleString('en-US', {
                                 minimumFractionDigits: 2,
                                 maximumFractionDigits: 2,
                             }) + ' DIVI';
@@ -150,60 +143,48 @@ export function createStakeChart(canvas, stakes) {
             scales: {
                 x: {
                     display: true,
-                    grid: {
-                        display: false,
-                    },
+                    grid: { display: false },
                     ticks: {
                         color: hintColor,
-                        font: {
-                            family: "'JetBrains Mono', monospace",
-                            size: 9,
-                        },
-                        maxRotation: 45,
-                        maxTicksLimit: 8,
+                        font: { family: "'JetBrains Mono', monospace", size: 9 },
+                        maxRotation: 0,
+                        maxTicksLimit: 7,
                     },
-                    border: {
-                        display: false,
-                    },
+                    border: { display: false },
                 },
                 y: {
-                    display: chronological.length <= 30,
+                    display: true,
                     position: 'left',
-                    grid: {
-                        color: borderColor,
-                        lineWidth: 0.5,
+                    title: {
+                        display: true,
+                        text: 'Daily',
+                        color: hintColor,
+                        font: { size: 9 },
                     },
+                    grid: { color: borderColor, lineWidth: 0.5 },
                     ticks: {
                         color: hintColor,
-                        font: {
-                            family: "'JetBrains Mono', monospace",
-                            size: 10,
-                        },
+                        font: { family: "'JetBrains Mono', monospace", size: 10 },
                         callback: (v) => v.toLocaleString(),
                     },
-                    border: {
-                        display: false,
-                    },
+                    border: { display: false },
                 },
                 y1: {
                     display: true,
-                    position: datasets.length > 1 ? 'right' : 'left',
-                    grid: {
-                        display: datasets.length <= 1,
-                        color: borderColor,
-                        lineWidth: 0.5,
+                    position: 'right',
+                    title: {
+                        display: true,
+                        text: 'Total',
+                        color: hintColor,
+                        font: { size: 9 },
                     },
+                    grid: { display: false },
                     ticks: {
                         color: hintColor,
-                        font: {
-                            family: "'JetBrains Mono', monospace",
-                            size: 10,
-                        },
-                        callback: (v) => v.toLocaleString(),
+                        font: { family: "'JetBrains Mono', monospace", size: 10 },
+                        callback: (v) => v >= 1000 ? (v / 1000).toFixed(0) + 'K' : v.toLocaleString(),
                     },
-                    border: {
-                        display: false,
-                    },
+                    border: { display: false },
                 },
             },
         },
@@ -213,24 +194,16 @@ export function createStakeChart(canvas, stakes) {
 }
 
 /**
- * Parse a hex color string (#RRGGBB or #RGB) into {r, g, b}.
+ * Convert a hex color string to { r, g, b }.
  */
 function hexToRgb(hex) {
     if (!hex) return null;
-
-    // Remove leading #
     hex = hex.replace(/^#/, '');
-
-    // Handle 3-char hex
     if (hex.length === 3) {
         hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
     }
-
-    if (hex.length !== 6) return null;
-
     const num = parseInt(hex, 16);
     if (isNaN(num)) return null;
-
     return {
         r: (num >> 16) & 255,
         g: (num >> 8) & 255,

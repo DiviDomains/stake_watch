@@ -708,14 +708,22 @@ async fn get_analysis(
     };
 
     let health = match &last_stake_info {
-        None => "No data".to_string(),
+        None => {
+            // Even without recorded stake events, if we have stakes_24h > 0
+            // from the block height calculation, show healthy
+            if stakes_24h > 0 {
+                "healthy".to_string()
+            } else {
+                "nodata".to_string()
+            }
+        }
         Some((_, elapsed)) => {
             if expected_secs.is_infinite() {
-                "No data".to_string()
+                "nodata".to_string()
             } else if (*elapsed as f64) < expected_secs * 2.0 {
-                "Healthy".to_string()
+                "healthy".to_string()
             } else {
-                "Overdue".to_string()
+                "overdue".to_string()
             }
         }
     };
