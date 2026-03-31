@@ -94,7 +94,7 @@ function renderBlockList(container, blocks) {
     for (const block of blocks) {
         const height = block.height;
         const hash = block.hash;
-        const txCount = block.tx ? block.tx.length : (block.tx_count || 0);
+        const txCount = block.tx_count || (block.tx ? block.tx.length : 0);
         const time = block.time ? timeAgo(block.time) : '';
 
         html += `
@@ -203,17 +203,19 @@ export async function renderBlockDetail(container, hashOrHeight) {
                     </div>` : ''}
                     <div class="info-row">
                         <div class="info-label">Transactions</div>
-                        <div class="info-value text-mono">${block.tx ? block.tx.length : 0}</div>
+                        <div class="info-value text-mono">${block.tx_count || (block.transactions ? block.transactions.length : 0)}</div>
                     </div>
                 </div>
             </div>`;
 
-        // Transaction list
-        if (block.tx && block.tx.length > 0) {
+        // Transaction list — API returns "transactions" array with {txid, ...} objects
+        const txList = block.transactions || (block.tx ? block.tx.map(t => typeof t === 'string' ? { txid: t } : t) : []);
+        if (txList.length > 0) {
             html += `<div class="section-title card-stagger">Transactions</div>`;
 
-            for (let i = 0; i < block.tx.length; i++) {
-                const txid = block.tx[i];
+            for (let i = 0; i < txList.length; i++) {
+                const txEntry = txList[i];
+                const txid = txEntry.txid || txEntry;
                 const label = i === 0 ? 'Coinbase' : i === 1 ? 'Coinstake' : `Tx ${i}`;
 
                 html += `
