@@ -69,6 +69,7 @@ const NORMAL_SCRIPT_TYPES: &[&str] = &[
     "witness_v0_keyhash",
     "witness_v0_scripthash",
     "nonstandard",
+    "vault",
 ];
 
 // ---------------------------------------------------------------------------
