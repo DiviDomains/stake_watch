@@ -553,16 +553,27 @@ export async function renderAddressPage(container, address) {
             </button>`;
 
         // Recent transactions from recent_deltas
-        const deltas = addrData?.recent_deltas || [];
-        html += `<div class="section-title card-stagger">Recent Transactions</div>`;
+        // Deduplicate by txid (vault deltas have both +/- entries per tx)
+        const rawDeltas = addrData?.recent_deltas || [];
+        const seenTxids = new Set();
+        const deltas = [];
+        for (const d of rawDeltas) {
+            if (!seenTxids.has(d.txid)) {
+                seenTxids.add(d.txid);
+                deltas.push(d);
+            }
+        }
+
+        html += `<div class="section-title card-stagger">Recent Transactions (${deltas.length})</div>`;
 
         if (deltas.length === 0) {
             html += `<div class="card card-stagger"><div class="text-sm text-hint" style="padding: var(--space-sm) 0;">No transactions found</div></div>`;
         } else {
-            for (const delta of deltas.slice(0, 50)) {
-                const amountSats = typeof delta.amount === 'number' ? delta.amount : parseInt(delta.amount, 10);
-                const isPositive = amountSats >= 0;
-                const amountDisplay = (isPositive ? '+' : '') + formatDivi(amountSats);
+            for (const delta of deltas) {
+                // amount_divi is a string like "12946.50000000" or "-11286.50000000"
+                const amountFloat = parseFloat(delta.amount_divi || '0');
+                const isPositive = amountFloat >= 0;
+                const amountDisplay = (isPositive ? '+' : '') + formatDiviFloat(amountFloat);
                 const amountClass = isPositive ? 'text-success' : 'text-danger';
                 const txid = delta.txid || '';
                 const height = delta.height != null ? delta.height : null;
@@ -581,26 +592,25 @@ export async function renderAddressPage(container, address) {
             }
         }
 
-        // Download buttons — store data in globals for onclick handlers
-        const addrDownloadData = {
+        // Download buttons
+        window.__addrDownloadData = {
             address,
-            balance: addrData?.balance,
-            vault_balance: vaultBalanceSats,
-            received: addrData?.received,
-            recent_deltas: deltas,
+            balance_divi: addrData?.balance_divi,
+            vault_balance_divi: addrData?.vault_balance_divi,
+            received_divi: addrData?.received_divi,
+            transactions: deltas,
         };
-        window.__addrDownloadData = addrDownloadData;
 
-        const csvRows = deltas.slice(0, 50).map(d => [
+        window.__addrCsvData = deltas.map(d => [
             d.height ?? '',
             d.txid ?? '',
-            d.amount ?? '',
+            d.amount_divi ?? '',
         ]);
 
         html += `
             <div style="display:flex; gap:8px; margin-top:var(--space-lg);">
                 <button class="btn btn-ghost btn-sm" onclick="downloadJson(window.__addrDownloadData, 'address-${escapeHtml(address)}.json')">Download JSON</button>
-                <button class="btn btn-ghost btn-sm" onclick="downloadCsv(${JSON.stringify(csvRows)}, ['height','txid','amount'], 'address-${escapeHtml(address)}.csv')">Download CSV</button>
+                <button class="btn btn-ghost btn-sm" onclick="downloadCsv(window.__addrCsvData, ['height','txid','amount_divi'], 'address-${escapeHtml(address)}.csv')">Download CSV</button>
             </div>`;
 
         html += `</div>`;
