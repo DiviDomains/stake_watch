@@ -9,4 +9,4 @@ pub mod notifier;
 pub mod rpc;
 pub mod stake_analyzer;
 pub mod utils;
-pub mod vault_indexer;
+pub mod webapp;

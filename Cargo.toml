@@ -25,12 +25,12 @@ thiserror = "2"
 async-trait = "0.1"
 futures-util = "0.3"
 axum = "0.8"
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+hmac = "0.12"
+sha2 = "0.10"
+form_urlencoded = "1"
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 [[bin]]
 name = "stake_watch"
 path = "src/main.rs"
-
-[[bin]]
-name = "vault_indexer"
-path = "src/bin/vault_indexer.rs"

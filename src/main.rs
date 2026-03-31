@@ -6,6 +6,7 @@ use tracing::{error, info};
 
 use stake_watch::{
     block_processor, bot, config, db, fork_detector, monitor, notifier, rpc, stake_analyzer,
+    webapp,
 };
 
 // ---------------------------------------------------------------------------
@@ -118,6 +119,9 @@ async fn main() -> Result<()> {
         config.backend.explorer_url.clone(),
     ));
 
+    // Create broadcast channel for SSE block feed
+    let (sse_block_tx, _sse_block_rx) = tokio::sync::broadcast::channel::<String>(64);
+
     // Create block monitor channel
     let (block_tx, block_rx) = tokio::sync::mpsc::channel::<String>(256);
 
@@ -131,10 +135,23 @@ async fn main() -> Result<()> {
     });
 
     // Start block processor
+    // Create a forwarding channel that tees block hashes to the SSE broadcast
+    let (fwd_tx, fwd_rx) = tokio::sync::mpsc::channel::<String>(256);
+    let sse_tx_for_fwd = sse_block_tx.clone();
+    let fwd_handle = tokio::spawn(async move {
+        let mut rx = block_rx;
+        while let Some(hash) = rx.recv().await {
+            let _ = sse_tx_for_fwd.send(hash.clone());
+            if fwd_tx.send(hash).await.is_err() {
+                break;
+            }
+        }
+    });
+
     let processor =
         block_processor::BlockProcessor::new(rpc_client.clone(), db_pool.clone(), notifier.clone());
     let processor_handle = tokio::spawn(async move {
-        processor.run(block_rx).await;
+        processor.run(fwd_rx).await;
     });
 
     // Start Telegram bot
@@ -176,6 +193,31 @@ async fn main() -> Result<()> {
         None
     };
 
+    // Start web application server
+    let webapp_state = Arc::new(webapp::WebAppState {
+        db: db_pool.clone(),
+        rpc: rpc_client.clone(),
+        config: config.clone(),
+        secrets: secrets.clone(),
+        explorer_url: config.backend.explorer_url.clone(),
+        block_tx: Some(sse_block_tx),
+    });
+    let webapp_router = webapp::router(webapp_state);
+    let webapp_port = std::env::var("WEBAPP_PORT")
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(18095);
+    let webapp_addr = std::net::SocketAddr::from(([0, 0, 0, 0], webapp_port));
+    let webapp_listener = tokio::net::TcpListener::bind(webapp_addr)
+        .await
+        .with_context(|| format!("binding webapp to {webapp_addr}"))?;
+    info!(port = webapp_port, "Web application server starting");
+    let webapp_handle = tokio::spawn(async move {
+        if let Err(e) = axum::serve(webapp_listener, webapp_router).await {
+            error!(error = %e, "Web application server failed");
+        }
+    });
+
     info!("All systems initialized -- press Ctrl+C to shut down");
 
     // Wait for shutdown signal
@@ -188,9 +230,11 @@ async fn main() -> Result<()> {
 
     // Abort tasks
     monitor_handle.abort();
+    fwd_handle.abort();
     processor_handle.abort();
     bot_handle.abort();
     alert_handle.abort();
+    webapp_handle.abort();
     if let Some(h) = fork_handle {
         h.abort();
     }
