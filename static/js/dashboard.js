@@ -89,16 +89,16 @@ export async function renderDashboard(container) {
         for (const item of enriched) {
             const a = item.analysis;
             const label = item.label ? escapeHtml(item.label) : 'Unnamed';
+            const addrType = a?.address_type || 'standard';
+            const isTreasuryOrCharity = addrType === 'treasury' || addrType === 'charity';
+            const isVault = a?.is_vault || false;
+            const balance = a ? formatDiviShort(a.balance_satoshis || 0) : '--';
             const healthClass = a
                 ? (isTreasuryOrCharity ? 'health-healthy' : `health-${a.health}`)
                 : 'health-nodata';
             const healthText = isTreasuryOrCharity
                 ? (addrType === 'treasury' ? 'Treasury' : 'Charity')
                 : (a ? getHealthText(a.health) : 'No data');
-            const balance = a ? formatDiviShort(a.balance_satoshis || 0) : '--';
-            const isVault = a?.is_vault || false;
-            const addrType = a?.address_type || 'standard';
-            const isTreasuryOrCharity = addrType === 'treasury' || addrType === 'charity';
 
             // Treasury/Charity don't stake — show payment info instead
             const stakesLabel = isTreasuryOrCharity ? 'Payments' : 'Stakes / 24h';
