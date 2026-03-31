@@ -120,7 +120,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
             block_height    INTEGER NOT NULL,
             block_hash      TEXT NOT NULL,
             amount_satoshis INTEGER NOT NULL,
-            event_type      TEXT NOT NULL CHECK(event_type IN ('stake', 'lottery')),
+            event_type      TEXT NOT NULL CHECK(event_type IN ('stake', 'lottery', 'payment')),
             detected_at     TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(txid, address)
         );

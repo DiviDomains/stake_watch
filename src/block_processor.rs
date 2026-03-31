@@ -104,13 +104,18 @@ impl BlockProcessor {
         // 5. Fetch and analyze transactions
         let mut fetched_transactions: Vec<Transaction> = Vec::new();
 
-        // Process coinbase transaction (tx[0]) -- mining reward
+        // Process coinbase transaction (tx[0]) -- block reward (treasury/charity payments)
         if let Some(coinbase_txid) = block.tx.first() {
             match self.rpc.get_raw_transaction(coinbase_txid).await {
                 Ok(coinbase_tx) => {
                     if !watched_addresses.is_empty() {
-                        self.check_stake_outputs(&block, &coinbase_tx, &watched_addresses, "stake")
-                            .await;
+                        self.check_stake_outputs(
+                            &block,
+                            &coinbase_tx,
+                            &watched_addresses,
+                            "payment",
+                        )
+                        .await;
                     }
                     fetched_transactions.push(coinbase_tx);
                 }
@@ -296,10 +301,16 @@ impl BlockProcessor {
             let label = db::get_watch_label(&self.db, *chat_id, address).unwrap_or(None);
             let label_str = label.map(|l| format!(" ({})", l)).unwrap_or_default();
 
+            let (title, amount_label) = match event_type {
+                "payment" => ("Block Payment Received!", "Amount"),
+                "lottery" => ("Lottery Win!", "Prize"),
+                _ => ("Stake Reward Detected!", "Reward"),
+            };
+
             let message = format!(
-                "<b>Stake Reward Detected!</b>\n\n\
+                "<b>{title}</b>\n\n\
                  Address: <a href=\"{explorer_url}/address/{address}\">{address}</a>{label_str}\n\
-                 Reward: <b>{} DIVI</b>\n\
+                 {amount_label}: <b>{} DIVI</b>\n\
                  Block: {}\n\
                  <a href=\"{explorer_url}/tx/{txid}\">View Transaction</a>",
                 satoshi_to_divi(amount_satoshis),
