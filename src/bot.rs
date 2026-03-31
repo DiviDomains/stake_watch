@@ -168,13 +168,25 @@ async fn command_handler(
 // /start
 // ---------------------------------------------------------------------------
 
+/// Default watched addresses added for every new user.
+const DEFAULT_WATCHES: &[(&str, &str)] = &[
+    ("DPhJsztbZafDc1YeyrRqSjmKjkmLJpQpUn", "Divi Treasury"),
+    ("DPujt2XAdHyRcZNB5ySZBBVKjzY2uXZGYq", "Divi Charity"),
+];
+
 async fn handle_start(
     state: &BotState,
     telegram_id: i64,
     username: Option<&str>,
 ) -> Result<String> {
     db::add_user(&state.db, telegram_id, username)?;
-    info!(telegram_id, ?username, "New user registered");
+
+    // Add default watches for new users (treasury + charity)
+    for (address, label) in DEFAULT_WATCHES {
+        let _ = db::add_watch(&state.db, telegram_id, address, Some(label));
+    }
+
+    info!(telegram_id, ?username, "New user registered with default watches");
 
     Ok(concat!(
         "<b>Welcome to Stake Watch!</b>\n\n",
