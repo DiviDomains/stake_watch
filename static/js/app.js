@@ -18,7 +18,7 @@ const tg = window.Telegram?.WebApp;
 if (tg) {
     tg.ready();
     tg.expand();
-    tg.enableClosingConfirmation();
+    // No closing confirmation needed — read-only dashboard
 
     // Apply Telegram header color to match the app
     if (tg.setHeaderColor) {

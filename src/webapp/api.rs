@@ -123,15 +123,19 @@ struct AnalysisResponse {
     address: String,
     label: Option<String>,
     balance_divi: String,
+    balance_satoshis: i64,
     is_vault: bool,
     total_received_divi: String,
     stakes_24h: usize,
     stakes_7d: usize,
     stakes_30d: usize,
+    rewards_24h_satoshis: i64,
     avg_stake_divi: String,
     expected_frequency: String,
     expected_frequency_secs: Option<f64>,
+    expected_interval_secs: Option<f64>,
     last_stake: String,
+    last_stake_time: Option<String>,
     health: String,
     explorer_url: String,
 }
@@ -529,23 +533,40 @@ async fn get_analysis(
         utils::satoshi_to_divi(balance.received)
     };
 
+    // Compute 24h rewards from stake events
+    let rewards_24h: i64 = stakes
+        .iter()
+        .filter(|s| current_height.saturating_sub(s.block_height) < blocks_24h)
+        .map(|s| s.amount_satoshis)
+        .sum();
+
+    let exp_secs_opt = if expected_secs.is_infinite() {
+        None
+    } else {
+        Some(expected_secs)
+    };
+
     Ok(Json(AnalysisResponse {
         address: address.clone(),
         label,
         balance_divi: utils::satoshi_to_divi(balance.balance),
+        balance_satoshis: balance.balance,
         is_vault,
         total_received_divi: total_received,
         stakes_24h,
         stakes_7d,
         stakes_30d,
+        rewards_24h_satoshis: rewards_24h,
         avg_stake_divi: utils::satoshi_to_divi(avg_amount),
         expected_frequency: expected_str,
-        expected_frequency_secs: if expected_secs.is_infinite() {
+        expected_frequency_secs: exp_secs_opt,
+        expected_interval_secs: exp_secs_opt,
+        last_stake: last_stake_str.clone(),
+        last_stake_time: if last_stake_str == "Never" {
             None
         } else {
-            Some(expected_secs)
+            Some(last_stake_str)
         },
-        last_stake: last_stake_str,
         health,
         explorer_url: state.explorer_url.clone(),
     }))
