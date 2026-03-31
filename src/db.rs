@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::NaiveDateTime;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use tracing::info;
@@ -275,6 +275,19 @@ pub fn get_all_watched_addresses(db: &DbPool) -> Result<HashSet<String>> {
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<std::result::Result<HashSet<_>, _>>()?;
     Ok(rows)
+}
+
+pub fn get_watch_label(db: &DbPool, telegram_id: i64, address: &str) -> Result<Option<String>> {
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
+    let label = conn
+        .query_row(
+            "SELECT label FROM watched_addresses WHERE telegram_id = ?1 AND address = ?2",
+            params![telegram_id, address],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(label)
 }
 
 pub fn get_users_for_address(db: &DbPool, address: &str) -> Result<Vec<i64>> {

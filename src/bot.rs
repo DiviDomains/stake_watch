@@ -373,7 +373,7 @@ async fn handle_list(state: &BotState, telegram_id: i64) -> Result<String> {
         text.push_str(&format!(
             "{}. <code>{}</code>{}\n   {}\n\n",
             i + 1,
-            truncate_address(&w.address),
+            w.address,
             label,
             last_stake_info,
         ));

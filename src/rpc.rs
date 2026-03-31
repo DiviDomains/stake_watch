@@ -42,6 +42,8 @@ pub struct Vin {
     pub txid: Option<String>,
     #[serde(default)]
     pub vout: Option<u32>,
+    #[serde(default)]
+    pub value: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -7,6 +7,7 @@ use crate::alert_analyzer::AlertAnalyzer;
 use crate::db::{self, DbPool};
 use crate::notifier::Notifier;
 use crate::rpc::{RpcClient, Transaction, Vout};
+use crate::utils::satoshi_to_divi;
 
 /// Processes block hashes received from a monitor, inspecting each block's
 /// transactions for staking rewards to watched addresses and running
@@ -252,11 +253,26 @@ impl BlockProcessor {
         vout: &Vout,
         event_type: &str,
     ) -> anyhow::Result<()> {
-        // Convert DIVI (f64) to satoshis (i64) for database storage
-        let amount_satoshis = (vout.value * 100_000_000.0).round() as i64;
+        // For vault outputs compute the reward (net gain) rather than recording
+        // the full recycled UTXO value.
+        let amount_satoshis = if vout.script_pub_key.script_type.as_deref() == Some("vault") {
+            let total_out: f64 = tx.vout.iter().map(|v| v.value).sum();
+            let total_in: f64 = tx.vin.iter().filter_map(|v| v.value).sum();
+            let reward_sats = (total_out * 100_000_000.0).round() as i64
+                - (total_in * 100_000_000.0).round() as i64;
+            // Sanity-check: reward should be positive and reasonable.
+            // Fall back to vout.value if the computation looks wrong
+            // (e.g. vin values not available in this RPC backend).
+            if reward_sats > 0 {
+                reward_sats
+            } else {
+                (vout.value * 100_000_000.0).round() as i64
+            }
+        } else {
+            (vout.value * 100_000_000.0).round() as i64
+        };
 
         // Record the stake event in the database.
-        // Signature: record_stake_event(db, address, txid, block_height, block_hash, amount_satoshis, event_type)
         db::record_stake_event(
             &self.db,
             address,
@@ -268,24 +284,29 @@ impl BlockProcessor {
         )?;
 
         // Update last_stake_at and last_stake_height for all watchers of this address.
-        // Signature: update_last_stake(db, address, height)
         db::update_last_stake(&self.db, address, block.height)?;
 
         // Get users watching this address
         let users = db::get_users_for_address(&self.db, address)?;
 
-        // Send notifications
-        let message = format!(
-            "\u{1f4b0} *Stake Reward Detected!*\n\n\
-             Address: `{}`\n\
-             Amount: {:.8} DIVI\n\
-             Type: {}\n\
-             Height: {}\n\
-             Tx: `{}`",
-            address, vout.value, event_type, block.height, tx.txid
-        );
+        let explorer_url = &self.notifier.explorer_url;
 
+        // Send notifications — include label per user
         for chat_id in &users {
+            let label = db::get_watch_label(&self.db, *chat_id, address).unwrap_or(None);
+            let label_str = label.map(|l| format!(" ({})", l)).unwrap_or_default();
+
+            let message = format!(
+                "<b>Stake Reward Detected!</b>\n\n\
+                 Address: <a href=\"{explorer_url}/address/{address}\">{address}</a>{label_str}\n\
+                 Reward: <b>{} DIVI</b>\n\
+                 Block: {}\n\
+                 <a href=\"{explorer_url}/tx/{txid}\">View Transaction</a>",
+                satoshi_to_divi(amount_satoshis),
+                block.height,
+                txid = tx.txid,
+            );
+
             if let Err(e) = self.notifier.send_message(*chat_id, &message).await {
                 warn!(
                     chat_id = chat_id,

@@ -17,7 +17,7 @@ use crate::utils::{format_duration, satoshi_to_divi, truncate_address};
 pub struct Notifier {
     bot: Bot,
     db: DbPool,
-    explorer_url: String,
+    pub explorer_url: String,
 }
 
 impl Notifier {
