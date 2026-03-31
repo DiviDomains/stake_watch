@@ -123,7 +123,20 @@ async fn command_handler(
     let username = msg.from.as_ref().and_then(|u| u.username.clone());
 
     // Ensure user exists and has default watches on any first interaction
-    ensure_user_registered(&state, telegram_id, username.as_deref());
+    let defaults_added = ensure_user_registered(&state, telegram_id, username.as_deref());
+    if defaults_added {
+        // Backfill history for newly added default watches
+        for (address, _) in DEFAULT_WATCHES {
+            let rpc = Arc::clone(&state.rpc);
+            let db = Arc::clone(&state.db);
+            let addr = address.to_string();
+            tokio::spawn(async move {
+                if let Err(e) = StakeAnalyzer::backfill_stakes(&rpc, &db, &addr).await {
+                    tracing::warn!(address = %addr, error = %e, "Default watch backfill failed");
+                }
+            });
+        }
+    }
 
     let response = match cmd {
         Command::Start => handle_start(&state, telegram_id, username.as_deref()).await,
@@ -178,7 +191,8 @@ const DEFAULT_WATCHES: &[(&str, &str)] = &[
 
 /// Ensure the user is registered. Add default watches only if user has zero watches
 /// (don't re-add defaults that the user deliberately removed).
-fn ensure_user_registered(state: &BotState, telegram_id: i64, username: Option<&str>) {
+/// Returns true if default watches were added (so caller can trigger backfill).
+fn ensure_user_registered(state: &BotState, telegram_id: i64, username: Option<&str>) -> bool {
     let _ = db::add_user(&state.db, telegram_id, username);
     if let Ok(count) = db::get_watch_count_for_user(&state.db, telegram_id) {
         if count == 0 {
@@ -191,8 +205,10 @@ fn ensure_user_registered(state: &BotState, telegram_id: i64, username: Option<&
                     1000,
                 );
             }
+            return true;
         }
     }
+    false
 }
 
 async fn handle_start(

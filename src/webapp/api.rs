@@ -343,6 +343,23 @@ async fn get_watches(
 
     let watches = db::get_watches_for_user(&state.db, user.id).map_err(internal_error)?;
 
+    // Trigger backfill for any watches that have no recorded events yet
+    for w in &watches {
+        let events = db::get_recent_stakes(&state.db, &w.address, 1).unwrap_or_default();
+        if events.is_empty() {
+            let rpc = Arc::clone(&state.rpc);
+            let db = state.db.clone();
+            let addr = w.address.clone();
+            tokio::spawn(async move {
+                if let Err(e) =
+                    crate::stake_analyzer::StakeAnalyzer::backfill_stakes(&rpc, &db, &addr).await
+                {
+                    tracing::warn!(address = %addr, error = %e, "Auto-backfill failed");
+                }
+            });
+        }
+    }
+
     let mut result = Vec::with_capacity(watches.len());
     for w in &watches {
         // Try to fetch balances (best-effort)
