@@ -55,6 +55,14 @@ pub struct ForkEndpoint {
 }
 
 #[derive(Debug, Clone)]
+pub struct User {
+    pub id: i64,
+    pub telegram_id: i64,
+    pub telegram_username: Option<String>,
+    pub created_at: NaiveDateTime,
+}
+
+#[derive(Debug, Clone)]
 pub struct ForkEvent {
     pub id: i64,
     pub height: u64,
@@ -216,6 +224,33 @@ pub fn add_user(db: &DbPool, telegram_id: i64, username: Option<&str>) -> Result
         params![telegram_id, username],
     )?;
     Ok(())
+}
+
+pub fn get_all_users(db: &DbPool) -> Result<Vec<User>> {
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
+    let mut stmt = conn.prepare(
+        "SELECT id, telegram_id, telegram_username, created_at FROM users ORDER BY created_at",
+    )?;
+    let users = stmt
+        .query_map([], |row| {
+            Ok(User {
+                id: row.get(0)?,
+                telegram_id: row.get(1)?,
+                telegram_username: row.get(2)?,
+                created_at: parse_dt(&row.get::<_, String>(3)?),
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(users)
+}
+
+pub fn get_all_user_ids(db: &DbPool) -> Result<Vec<i64>> {
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
+    let mut stmt = conn.prepare("SELECT telegram_id FROM users ORDER BY created_at")?;
+    let ids = stmt
+        .query_map([], |row| row.get::<_, i64>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(ids)
 }
 
 // ---------------------------------------------------------------------------

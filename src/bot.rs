@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -51,6 +52,10 @@ pub enum Command {
     AddFork(String),
     #[command(description = "Remove fork monitoring endpoint (admin)")]
     RemoveFork(String),
+    #[command(description = "List all users (admin)")]
+    Users,
+    #[command(description = "Broadcast message to all users (admin)")]
+    Broadcast(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +141,8 @@ async fn command_handler(
         Command::ForkStatus => handle_fork_status(&state).await,
         Command::AddFork(arg) => handle_add_fork(&state, telegram_id, &arg).await,
         Command::RemoveFork(arg) => handle_remove_fork(&state, telegram_id, &arg).await,
+        Command::Users => handle_users(&state, telegram_id).await,
+        Command::Broadcast(arg) => handle_broadcast(&state, &bot, telegram_id, &arg).await,
     };
 
     match response {
@@ -231,7 +238,9 @@ fn handle_help(state: &BotState, telegram_id: i64) -> Result<String> {
         text.push_str(
             "\n<b>Admin Commands</b>\n\
              /addfork &lt;name&gt; &lt;rpc_url&gt; - Add fork endpoint\n\
-             /removefork &lt;name&gt; - Remove fork endpoint\n",
+             /removefork &lt;name&gt; - Remove fork endpoint\n\
+             /users - List all users\n\
+             /broadcast &lt;message&gt; - Send message to all users\n",
         );
     }
 
@@ -836,4 +845,90 @@ async fn query_endpoint_height(rpc_url: &str) -> Result<u64> {
     use crate::rpc::JsonRpcClient;
     let client = JsonRpcClient::new(rpc_url.to_string(), None, None);
     client.get_block_count().await
+}
+
+// ---------------------------------------------------------------------------
+// /users  (admin only)
+// ---------------------------------------------------------------------------
+
+async fn handle_users(state: &BotState, telegram_id: i64) -> Result<String> {
+    if !state.is_admin(telegram_id) {
+        return Ok("This command is restricted to bot administrators.".to_string());
+    }
+
+    let users = db::get_all_users(&state.db)?;
+
+    if users.is_empty() {
+        return Ok("<b>Users</b>\n\nNo users registered yet.".to_string());
+    }
+
+    let mut text = format!("<b>Users ({})</b>\n\n", users.len());
+
+    for u in &users {
+        let username = match &u.telegram_username {
+            Some(n) => format!("@{n}"),
+            None => "(no username)".to_string(),
+        };
+        let watch_count = db::get_watch_count_for_user(&state.db, u.telegram_id).unwrap_or(0);
+        let joined = u.created_at.format("%Y-%m-%d").to_string();
+        text.push_str(&format!(
+            "<code>{}</code> {} — {} watch(es), joined {}\n",
+            u.telegram_id, username, watch_count, joined,
+        ));
+    }
+
+    Ok(text)
+}
+
+// ---------------------------------------------------------------------------
+// /broadcast <message>  (admin only)
+// ---------------------------------------------------------------------------
+
+async fn handle_broadcast(
+    state: &BotState,
+    bot: &Bot,
+    telegram_id: i64,
+    arg: &str,
+) -> Result<String> {
+    if !state.is_admin(telegram_id) {
+        return Ok("This command is restricted to bot administrators.".to_string());
+    }
+
+    let message = arg.trim();
+    if message.is_empty() {
+        return Ok("Usage: /broadcast Your message here".to_string());
+    }
+
+    let user_ids = db::get_all_user_ids(&state.db)?;
+
+    if user_ids.is_empty() {
+        return Ok("No users to broadcast to.".to_string());
+    }
+
+    let mut successes: u32 = 0;
+    let mut failures: u32 = 0;
+
+    for uid in &user_ids {
+        match bot
+            .send_message(ChatId(*uid), message)
+            .parse_mode(ParseMode::Html)
+            .await
+        {
+            Ok(_) => successes += 1,
+            Err(e) => {
+                warn!(user_id = uid, error = %e, "Broadcast failed for user");
+                failures += 1;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    info!(
+        sent_by = telegram_id,
+        successes, failures, "Broadcast complete"
+    );
+
+    Ok(format!(
+        "Broadcast sent to {successes} user(s) ({failures} failed)."
+    ))
 }
