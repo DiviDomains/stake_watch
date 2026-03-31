@@ -220,31 +220,35 @@ export async function renderBlockDetail(container, hashOrHeight) {
                 const hasFullData = tx.vin && tx.vout;
 
                 html += `<div class="card card-stagger" style="padding: var(--space-md) var(--space-lg);">`;
+                const rewardStr = tx.reward_divi ? `<span class="text-success text-xs" style="margin-left: 8px;">+${formatDiviFloat(parseFloat(tx.reward_divi))} reward</span>` : '';
                 html += `<div class="flex-between mb-sm">
-                    <span class="badge ${i <= 1 ? 'badge-neutral' : ''}">${label}</span>
+                    <span class="badge ${i <= 1 ? 'badge-neutral' : ''}">${label}${rewardStr}</span>
                     <span class="text-hint text-xs">${formatDiviFloat(parseFloat(tx.total_output_divi || '0'))} DIVI</span>
                 </div>`;
                 html += `<div class="tx-hash" style="cursor:pointer" onclick="navigate('tx', { txid: '${escapeHtml(txid)}' })">${escapeHtml(txid)}</div>`;
 
                 if (hasFullData) {
-                    // Inline inputs → outputs
                     html += `<div style="margin-top: var(--space-sm); font-size: 0.8rem;">`;
 
-                    // Inputs
+                    // Inputs with resolved addresses
                     for (const vin of tx.vin) {
                         if (vin.coinbase) {
-                            html += `<div class="tx-io-row" style="padding: 2px 0;"><span class="text-hint">Coinbase → New coins</span></div>`;
+                            html += `<div class="tx-io-row" style="padding: 3px 0;"><span class="text-hint text-xs">Coinbase (new coins)</span></div>`;
                         } else {
-                            const vinAddr = vin.addresses ? vin.addresses[0] : '';
+                            const vinAddrs = vin.addresses || [];
                             const vinVal = vin.value != null ? formatDiviFloat(vin.value) : '';
-                            html += `<div class="tx-io-row" style="padding: 2px 0;">
-                                <span class="text-hint text-xs">← ${vinAddr ? addressLink(vinAddr, 'text-mono text-xs text-accent') : 'Unknown'}</span>
+                            const isVinVault = vin.script_type === 'vault';
+                            const vinAddrDisplay = vinAddrs.length > 0
+                                ? vinAddrs.map(a => addressLink(a, 'text-mono text-xs text-accent')).join(', ')
+                                : '<span class="text-hint">Unknown</span>';
+                            html += `<div class="tx-io-row" style="padding: 3px 0;">
+                                <span class="text-xs">From: ${vinAddrDisplay}${isVinVault ? ' <span class="vault-badge" style="font-size:0.6rem">Vault</span>' : ''}</span>
                                 ${vinVal ? `<span class="text-xs">${vinVal}</span>` : ''}
                             </div>`;
                         }
                     }
 
-                    html += `<div style="padding: 2px 0; text-align: center; color: var(--hint);">↓</div>`;
+                    html += `<div style="padding: 4px 0; text-align: center; color: var(--hint); font-size: 0.75rem;">↓</div>`;
 
                     // Outputs
                     for (const vout of tx.vout) {
@@ -255,11 +259,13 @@ export async function renderBlockDetail(container, hashOrHeight) {
                         const isEmpty = vout.value === 0 && addrs.length === 0;
 
                         if (isEmpty) {
-                            html += `<div class="tx-io-row" style="padding: 2px 0;"><span class="text-hint text-xs">PoS marker (empty)</span></div>`;
+                            html += `<div class="tx-io-row" style="padding: 3px 0;"><span class="text-hint text-xs">PoS marker</span></div>`;
                         } else {
-                            html += `<div class="tx-io-row" style="padding: 2px 0;">
-                                <span>→ ${addrs.length > 0 ? addrs.map(a => addressLink(a, 'text-mono text-xs text-accent')).join(', ') : `<span class="text-hint text-xs">${spk.type || 'script'}</span>`}
-                                ${isVault ? '<span class="vault-badge" style="font-size:0.65rem">Vault</span>' : ''}</span>
+                            const addrDisplay = addrs.length > 0
+                                ? addrs.map(a => addressLink(a, 'text-mono text-xs text-accent')).join(', ')
+                                : `<span class="text-hint text-xs">${spk.type || 'script'}</span>`;
+                            html += `<div class="tx-io-row" style="padding: 3px 0;">
+                                <span class="text-xs">To: ${addrDisplay}${isVault ? ' <span class="vault-badge" style="font-size:0.6rem">Vault</span>' : ''}</span>
                                 <span class="text-xs text-success">${val}</span>
                             </div>`;
                         }

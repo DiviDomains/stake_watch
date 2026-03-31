@@ -950,20 +950,66 @@ async fn get_block(
                     1 => "Coinstake".to_string(),
                     _ => format!("Tx {i}"),
                 };
+                // Resolve input addresses by fetching previous transactions
+                let mut vin_data = Vec::new();
+                let mut total_input: f64 = 0.0;
+                for v in &tx.vin {
+                    if v.coinbase.is_some() {
+                        vin_data.push(serde_json::json!({
+                            "coinbase": true,
+                            "label": "New coins (block reward)",
+                        }));
+                    } else if let Some(prev_txid) = &v.txid {
+                        let prev_vout = v.vout.unwrap_or(0) as usize;
+                        // Fetch the previous tx to get the address and value
+                        let (addr, val) = match state.rpc.get_raw_transaction(prev_txid).await {
+                            Ok(prev_tx) => {
+                                let output = prev_tx.vout.get(prev_vout);
+                                let addresses = output
+                                    .and_then(|o| o.script_pub_key.addresses.clone())
+                                    .unwrap_or_default();
+                                let value = output.map(|o| o.value).unwrap_or(0.0);
+                                let script_type =
+                                    output.and_then(|o| o.script_pub_key.script_type.clone());
+                                (
+                                    serde_json::json!({
+                                        "addresses": addresses,
+                                        "script_type": script_type,
+                                    }),
+                                    value,
+                                )
+                            }
+                            Err(_) => {
+                                (serde_json::json!({"addresses": []}), v.value.unwrap_or(0.0))
+                            }
+                        };
+                        total_input += val;
+                        vin_data.push(serde_json::json!({
+                            "txid": prev_txid,
+                            "vout": v.vout,
+                            "value": val,
+                            "addresses": addr["addresses"],
+                            "script_type": addr["script_type"],
+                        }));
+                    }
+                }
+
+                // Calculate reward for coinstake
+                let reward = if i == 1 && total_input > 0.0 {
+                    Some(total_output - total_input)
+                } else {
+                    None
+                };
+
                 transactions.push(serde_json::json!({
                     "txid": tx.txid,
                     "label": label,
                     "vin_count": tx.vin.len(),
                     "vout_count": tx.vout.len(),
+                    "total_input_divi": format!("{total_input:.8}"),
                     "total_output_divi": format!("{total_output:.8}"),
-                    "vin": tx.vin.iter().map(|v| {
-                        serde_json::json!({
-                            "coinbase": v.coinbase,
-                            "txid": v.txid,
-                            "vout": v.vout,
-                            "value": v.value,
-                        })
-                    }).collect::<Vec<_>>(),
+                    "reward_divi": reward.map(|r| format!("{r:.8}")),
+                    "vin": vin_data,
                     "vout": tx.vout.iter().map(|v| {
                         serde_json::json!({
                             "value": v.value,
