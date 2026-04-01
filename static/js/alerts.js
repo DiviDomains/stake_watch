@@ -17,6 +17,7 @@ const ALERT_TYPES = {
     op_return:         { label: 'OP_RETURN Data',       icon: 'file-text',   description: 'Alert when a transaction contains OP_RETURN data.' },
     unusual_script:    { label: 'Unusual Script',       icon: 'alert-triangle', description: 'Alert on non-standard script types.' },
     anything_unusual:  { label: 'Anything Unusual',     icon: 'zap',         description: 'Catch-all: alert on any anomalous blockchain activity.' },
+    lottery_block:     { label: 'Lottery Block',         icon: 'gift',        description: 'Summary of all lottery block winners when a lottery block is found.' },
 };
 
 export async function renderAlerts(container) {
