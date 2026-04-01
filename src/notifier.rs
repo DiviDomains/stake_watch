@@ -48,10 +48,10 @@ impl Notifier {
         };
         format!(
             "<b>Staking Reward Received</b>\n\n\
-             Address: <a href=\"{base}/explorer/address/{address}\">{short_addr}</a>{label_line}\n\
+             Address: <a href=\"{base}/address/{address}\">{short_addr}</a>{label_line}\n\
              Amount: <b>{amount} DIVI</b>\n\
-             Block: <a href=\"{base}/explorer/tx/{txid}\">{block_height}</a>\n\n\
-             <a href=\"{base}/explorer/tx/{txid}\">View transaction</a>",
+             Block: <a href=\"{base}/tx/{txid}\">{block_height}</a>\n\n\
+             <a href=\"{base}/tx/{txid}\">View transaction</a>",
             base = self.explorer_url,
             short_addr = truncate_address(address),
             amount = satoshi_to_divi(amount_satoshis),
@@ -74,10 +74,10 @@ impl Notifier {
         format!(
             "<b>Lottery Win!</b>\n\n\
              Congratulations! Your address won the lottery!\n\n\
-             Address: <a href=\"{base}/explorer/address/{address}\">{short_addr}</a>{label_line}\n\
+             Address: <a href=\"{base}/address/{address}\">{short_addr}</a>{label_line}\n\
              Amount: <b>{amount} DIVI</b>\n\
-             Block: <a href=\"{base}/explorer/tx/{txid}\">{block_height}</a>\n\n\
-             <a href=\"{base}/explorer/tx/{txid}\">View transaction</a>",
+             Block: <a href=\"{base}/tx/{txid}\">{block_height}</a>\n\n\
+             <a href=\"{base}/tx/{txid}\">View transaction</a>",
             base = self.explorer_url,
             short_addr = truncate_address(address),
             amount = satoshi_to_divi(amount_satoshis),
@@ -108,7 +108,7 @@ impl Notifier {
 
         format!(
             "<b>Missed Stake Warning</b>\n\n\
-             Address: <a href=\"{base}/explorer/address/{address}\">{short_addr}</a>{label_line}\n\
+             Address: <a href=\"{base}/address/{address}\">{short_addr}</a>{label_line}\n\
              Balance: {balance} DIVI\n\n\
              Expected stake every: <b>{expected_str}</b>\n\
              Time since last stake: <b>{elapsed_str}</b> ({overdue_factor:.1}x expected)\n\n\
@@ -139,8 +139,8 @@ impl Notifier {
         let explorer = &self.explorer_url;
         for (ep_a, hash_a, ep_b, hash_b) in mismatches {
             text.push_str(&format!(
-                "\n  <b>{ep_a}</b>: <a href=\"{explorer}/explorer/block/{hash_a}\">{short_a}</a>\n\
-                   <b>{ep_b}</b>: <a href=\"{explorer}/explorer/block/{hash_b}\">{short_b}</a>\n",
+                "\n  <b>{ep_a}</b>: <a href=\"{explorer}/block/{hash_a}\">{short_a}</a>\n\
+                   <b>{ep_b}</b>: <a href=\"{explorer}/block/{hash_b}\">{short_b}</a>\n",
                 short_a = truncate_address(hash_a),
                 short_b = truncate_address(hash_b),
             ));
