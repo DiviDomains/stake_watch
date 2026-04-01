@@ -150,7 +150,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
             telegram_id INTEGER NOT NULL,
             alert_type  TEXT NOT NULL CHECK(alert_type IN (
                 'large_tx', 'large_block', 'many_inputs', 'many_outputs',
-                'op_return', 'unusual_script', 'anything_unusual'
+                'op_return', 'unusual_script', 'anything_unusual', 'lottery_block'
             )),
             threshold   REAL NOT NULL DEFAULT 0.0,
             created_at  TEXT NOT NULL DEFAULT (datetime('now')),
@@ -230,6 +230,46 @@ fn run_migrations(conn: &Connection) -> Result<()> {
             ],
         )?;
         info!("Migration: added include_in_portfolio column to watched_addresses");
+    }
+
+    // Migration: add 'lottery_block' to alert_subscriptions CHECK constraint.
+    // SQLite doesn't support ALTER CHECK, so recreate the table.
+    // Detect by trying to insert and rollback.
+    let needs_lottery_migration: bool = conn
+        .execute(
+            "INSERT INTO alert_subscriptions (telegram_id, alert_type, threshold)
+             VALUES (-1, 'lottery_block', 0)",
+            [],
+        )
+        .is_err();
+
+    if needs_lottery_migration {
+        conn.execute_batch(
+            "
+            CREATE TABLE alert_subscriptions_new (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id INTEGER NOT NULL,
+                alert_type  TEXT NOT NULL CHECK(alert_type IN (
+                    'large_tx', 'large_block', 'many_inputs', 'many_outputs',
+                    'op_return', 'unusual_script', 'anything_unusual', 'lottery_block'
+                )),
+                threshold   REAL NOT NULL DEFAULT 0.0,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(telegram_id, alert_type)
+            );
+            INSERT INTO alert_subscriptions_new (id, telegram_id, alert_type, threshold, created_at)
+                SELECT id, telegram_id, alert_type, threshold, created_at FROM alert_subscriptions;
+            DROP TABLE alert_subscriptions;
+            ALTER TABLE alert_subscriptions_new RENAME TO alert_subscriptions;
+            ",
+        )?;
+        info!("Migration: added lottery_block to alert_subscriptions CHECK constraint");
+    } else {
+        // Clean up the probe row
+        conn.execute(
+            "DELETE FROM alert_subscriptions WHERE telegram_id = -1 AND alert_type = 'lottery_block'",
+            [],
+        )?;
     }
 
     Ok(())
