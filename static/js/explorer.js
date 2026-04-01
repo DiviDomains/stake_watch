@@ -509,14 +509,16 @@ export async function renderAddressPage(container, address) {
                 </div>
             </div>`;
 
-        // Balances — prefer vault_balance_divi from addrData if vaultData unavailable
-        const regularBalance = addrData?.balance ?? 0;
+        // Balances — API returns DIVI strings, convert to satoshis for formatDiviShort
+        const regularBalance = addrData?.balance_divi != null
+            ? Math.round(parseFloat(addrData.balance_divi) * 1e8) : 0;
         const vaultBalanceSats = vaultData?.balance ?? (
             addrData?.vault_balance_divi != null
                 ? Math.round(parseFloat(addrData.vault_balance_divi) * 1e8)
                 : 0
         );
-        const totalReceived = addrData?.received ?? 0;
+        const totalReceived = addrData?.received_divi != null
+            ? Math.round(parseFloat(addrData.received_divi) * 1e8) : 0;
 
         html += `
             <div class="card card-stagger">
