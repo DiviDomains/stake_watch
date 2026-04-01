@@ -17,6 +17,7 @@ pub const ALERT_MANY_OUTPUTS: &str = "many_outputs";
 pub const ALERT_OP_RETURN: &str = "op_return";
 pub const ALERT_UNUSUAL_SCRIPT: &str = "unusual_script";
 pub const ALERT_ANYTHING_UNUSUAL: &str = "anything_unusual";
+pub const ALERT_LOTTERY_BLOCK: &str = "lottery_block";
 
 /// All valid alert type strings that users can subscribe to.
 pub const VALID_ALERT_TYPES: &[&str] = &[
@@ -27,6 +28,7 @@ pub const VALID_ALERT_TYPES: &[&str] = &[
     ALERT_OP_RETURN,
     ALERT_UNUSUAL_SCRIPT,
     ALERT_ANYTHING_UNUSUAL,
+    ALERT_LOTTERY_BLOCK,
 ];
 
 // ---------------------------------------------------------------------------

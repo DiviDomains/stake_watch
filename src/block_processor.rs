@@ -365,7 +365,14 @@ impl BlockProcessor {
         watched_addresses: &HashSet<String>,
     ) {
         match self.rpc.get_lottery_block_winners(&block.hash).await {
-            Ok(Some(lottery)) => {
+            Ok(Some(lottery)) if !lottery.winners.is_empty() => {
+                info!(
+                    height = block.height,
+                    winner_count = lottery.winners.len(),
+                    "Lottery block detected"
+                );
+
+                // --- Per-address notifications for watched addresses ---
                 for winner in &lottery.winners {
                     if watched_addresses.contains(&winner.address) {
                         info!(
@@ -414,13 +421,17 @@ impl BlockProcessor {
                             }
                         };
 
+                        let explorer_url = &self.notifier.explorer_url;
+                        let short_addr = crate::utils::truncate_address(&winner.address);
                         let message = format!(
-                            "\u{1f3c6} *Lottery Winner!*\n\n\
-                             Address: `{}`\n\
-                             Prize: {:.8} DIVI\n\
-                             Height: {}\n\
-                             Block: `{}`",
-                            winner.address, winner.amount, block.height, block.hash
+                            "\u{1f3c6} <b>Lottery Winner!</b>\n\n\
+                             Address: <a href=\"{explorer_url}/address/{addr}\">{short_addr}</a>\n\
+                             Prize: <b>{amount} DIVI</b>\n\
+                             Block: <a href=\"{explorer_url}/block/{hash}\">{height}</a>",
+                            addr = winner.address,
+                            amount = satoshi_to_divi((winner.amount * 100_000_000.0).round() as i64),
+                            hash = block.hash,
+                            height = block.height,
                         );
 
                         for chat_id in &users {
@@ -435,8 +446,57 @@ impl BlockProcessor {
                         }
                     }
                 }
+
+                // --- Lottery block summary for alert subscribers ---
+                let lottery_subs = db::get_subscribers_for_alert_type(
+                    &self.db,
+                    crate::alert_analyzer::ALERT_LOTTERY_BLOCK,
+                )
+                .unwrap_or_default();
+                let anything_subs = db::get_subscribers_for_alert_type(
+                    &self.db,
+                    crate::alert_analyzer::ALERT_ANYTHING_UNUSUAL,
+                )
+                .unwrap_or_default();
+
+                let mut subscriber_ids: Vec<i64> =
+                    lottery_subs.iter().map(|s| s.telegram_id).collect();
+                for sub in &anything_subs {
+                    if !subscriber_ids.contains(&sub.telegram_id) {
+                        subscriber_ids.push(sub.telegram_id);
+                    }
+                }
+
+                if !subscriber_ids.is_empty() {
+                    let winners_data: Vec<(String, f64)> = lottery
+                        .winners
+                        .iter()
+                        .map(|w| (w.address.clone(), w.amount))
+                        .collect();
+
+                    let summary = self.notifier.format_lottery_block_summary(
+                        block.height,
+                        &block.hash,
+                        &winners_data,
+                    );
+
+                    for chat_id in &subscriber_ids {
+                        if let Err(e) = self.notifier.send_message(*chat_id, &summary).await {
+                            warn!(
+                                chat_id = chat_id,
+                                error = %e,
+                                "Failed to send lottery block summary"
+                            );
+                        }
+                    }
+
+                    info!(
+                        subscriber_count = subscriber_ids.len(),
+                        "Lottery block summary sent"
+                    );
+                }
             }
-            Ok(None) => {
+            Ok(Some(_)) | Ok(None) => {
                 debug!(height = block.height, "No lottery winners for this block");
             }
             Err(e) => {

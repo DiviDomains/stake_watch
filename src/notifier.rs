@@ -151,6 +151,57 @@ impl Notifier {
         text
     }
 
+    /// Format a lottery block summary notification (HTML).
+    ///
+    /// Shows all winners grouped by prize tier, with links to the explorer.
+    pub fn format_lottery_block_summary(
+        &self,
+        block_height: u64,
+        block_hash: &str,
+        winners: &[(String, f64)], // (address, amount)
+    ) -> String {
+        const LOTTERY_INTERVAL: u64 = 10_080;
+        let next_height = block_height + LOTTERY_INTERVAL;
+        let explorer = &self.explorer_url;
+
+        let mut text = format!(
+            "\u{1f3b0} <b>Divi Lottery Block Winners</b>\n\
+             From Block <a href=\"{explorer}/block/{block_hash}\">{block_height}</a>\n"
+        );
+
+        // Group winners by amount tier (descending by amount)
+        let mut tiers: std::collections::BTreeMap<i64, Vec<&str>> =
+            std::collections::BTreeMap::new();
+        for (addr, amount) in winners {
+            let key = -((amount * 100_000_000.0).round() as i64); // negative for descending
+            tiers.entry(key).or_default().push(addr);
+        }
+
+        for (neg_satoshis, addrs) in &tiers {
+            let amount_str = satoshi_to_divi(-neg_satoshis);
+            let label = if addrs.len() == 1 {
+                format!("\n<b>{amount_str} DIVI winner:</b>")
+            } else {
+                format!("\n<b>{amount_str} DIVI winners:</b>")
+            };
+            text.push_str(&label);
+            text.push('\n');
+
+            for addr in addrs {
+                let short = truncate_address(addr);
+                text.push_str(&format!(
+                    "\u{1f39f}\u{fe0f} <a href=\"{explorer}/address/{addr}\">{short}</a> - {amount_str} DIVI\n",
+                ));
+            }
+        }
+
+        text.push_str(&format!(
+            "\nNext Lottery Block Height: <b>{next_height}</b>"
+        ));
+
+        text
+    }
+
     /// Format a generic blockchain alert (HTML).
     pub fn format_blockchain_alert(
         &self,
