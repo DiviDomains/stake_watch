@@ -429,7 +429,8 @@ impl BlockProcessor {
                              Prize: <b>{amount} DIVI</b>\n\
                              Block: <a href=\"{explorer_url}/block/{hash}\">{height}</a>",
                             addr = winner.address,
-                            amount = satoshi_to_divi((winner.amount * 100_000_000.0).round() as i64),
+                            amount =
+                                satoshi_to_divi((winner.amount * 100_000_000.0).round() as i64),
                             hash = block.hash,
                             height = block.height,
                         );
