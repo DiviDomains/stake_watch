@@ -130,6 +130,11 @@ impl StakeAnalyzer {
                 continue;
             }
 
+            // Treasury/Charity receive payments, not stakes — skip them
+            if watch.address == TREASURY_ADDRESS || watch.address == CHARITY_ADDRESS {
+                continue;
+            }
+
             // Fetch balance; try regular first, fall back to vault scan
             let effective_balance = {
                 let regular = match self.rpc.get_address_balance(&watch.address).await {
