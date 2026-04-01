@@ -271,6 +271,72 @@ impl StakeAnalyzer {
             }
         };
 
+        // Check if this is a vault address (regular deltas include vault data
+        // when indexed under the owner). Vault stakes have both positive and negative
+        // deltas in the same tx — detect this pattern and use net-delta approach.
+        let has_vault_pattern = !deltas.is_empty()
+            && deltas.iter().any(|d| d.satoshis < 0)
+            && deltas.iter().any(|d| d.satoshis > 0);
+
+        if has_vault_pattern {
+            info!(address, count = deltas.len(), "Detected vault delta pattern, using net-delta backfill");
+
+            let mut by_height: std::collections::BTreeMap<u64, Vec<i64>> =
+                std::collections::BTreeMap::new();
+            let mut txid_by_height: std::collections::BTreeMap<u64, String> =
+                std::collections::BTreeMap::new();
+            for d in &deltas {
+                by_height.entry(d.height).or_default().push(d.satoshis);
+                if d.satoshis > 0 {
+                    txid_by_height.entry(d.height).or_insert_with(|| d.txid.clone());
+                }
+            }
+
+            let mut recorded = 0u32;
+            let mut latest_height: Option<u64> = None;
+            let evt_type = event_type_for_address(address);
+
+            for (&height, sats) in by_height.iter().rev() {
+                let net: i64 = sats.iter().sum();
+                let has_negative = sats.iter().any(|&s| s < 0);
+
+                if !has_negative || net <= 0 {
+                    continue;
+                }
+
+                let txid = txid_by_height
+                    .get(&height)
+                    .cloned()
+                    .unwrap_or_default();
+
+                let block_hash = rpc.get_block_hash(height).await.unwrap_or_default();
+
+                if recorded < 100 {
+                    match db::record_stake_event(db, address, &txid, height, &block_hash, net, evt_type) {
+                        Ok(true) => {
+                            recorded += 1;
+                            debug!(address, txid = %txid, height, reward = %satoshi_to_divi(net), "Backfilled vault stake");
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            warn!(txid = %txid, error = %e, "Failed to record backfilled vault stake");
+                        }
+                    }
+                }
+
+                if latest_height.is_none() || Some(height) > latest_height {
+                    latest_height = Some(height);
+                }
+            }
+
+            if let Some(height) = latest_height {
+                crate::db::update_last_stake(db, address, height)?;
+            }
+
+            info!(address, recorded, "Vault-pattern backfill complete");
+            return Ok(());
+        }
+
         if deltas.is_empty() {
             // No regular deltas -- try vault deltas (only_vaults=true)
             info!(address, "No regular deltas, trying vault deltas");
