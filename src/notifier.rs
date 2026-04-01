@@ -48,12 +48,13 @@ impl Notifier {
         };
         format!(
             "<b>Staking Reward Received</b>\n\n\
-             Address: <code>{address}</code>{label_line}\n\
-             Amount: <b>{} DIVI</b>\n\
-             Block: {block_height}\n\n\
-             <a href=\"{}/tx/{txid}\">View transaction</a>",
-            satoshi_to_divi(amount_satoshis),
-            self.explorer_url,
+             Address: <a href=\"{base}/explorer/address/{address}\">{short_addr}</a>{label_line}\n\
+             Amount: <b>{amount} DIVI</b>\n\
+             Block: <a href=\"{base}/explorer/tx/{txid}\">{block_height}</a>\n\n\
+             <a href=\"{base}/explorer/tx/{txid}\">View transaction</a>",
+            base = self.explorer_url,
+            short_addr = truncate_address(address),
+            amount = satoshi_to_divi(amount_satoshis),
         )
     }
 
@@ -73,12 +74,13 @@ impl Notifier {
         format!(
             "<b>Lottery Win!</b>\n\n\
              Congratulations! Your address won the lottery!\n\n\
-             Address: <code>{address}</code>{label_line}\n\
-             Amount: <b>{} DIVI</b>\n\
-             Block: {block_height}\n\n\
-             <a href=\"{}/tx/{txid}\">View transaction</a>",
-            satoshi_to_divi(amount_satoshis),
-            self.explorer_url,
+             Address: <a href=\"{base}/explorer/address/{address}\">{short_addr}</a>{label_line}\n\
+             Amount: <b>{amount} DIVI</b>\n\
+             Block: <a href=\"{base}/explorer/tx/{txid}\">{block_height}</a>\n\n\
+             <a href=\"{base}/explorer/tx/{txid}\">View transaction</a>",
+            base = self.explorer_url,
+            short_addr = truncate_address(address),
+            amount = satoshi_to_divi(amount_satoshis),
         )
     }
 
@@ -106,15 +108,17 @@ impl Notifier {
 
         format!(
             "<b>Missed Stake Warning</b>\n\n\
-             Address: <code>{address}</code>{label_line}\n\
-             Balance: {} DIVI\n\n\
+             Address: <a href=\"{base}/explorer/address/{address}\">{short_addr}</a>{label_line}\n\
+             Balance: {balance} DIVI\n\n\
              Expected stake every: <b>{expected_str}</b>\n\
              Time since last stake: <b>{elapsed_str}</b> ({overdue_factor:.1}x expected)\n\n\
              Your address may have stopped staking. Please check:\n\
              - Is your wallet running and unlocked for staking?\n\
              - Is your node fully synced?\n\
              - Is your balance still available (not locked)?",
-            satoshi_to_divi(balance_satoshis),
+            base = self.explorer_url,
+            short_addr = truncate_address(address),
+            balance = satoshi_to_divi(balance_satoshis),
         )
     }
 
@@ -132,12 +136,13 @@ impl Notifier {
              Endpoints disagree on block hash:\n"
         );
 
+        let explorer = &self.explorer_url;
         for (ep_a, hash_a, ep_b, hash_b) in mismatches {
             text.push_str(&format!(
-                "\n  <b>{ep_a}</b>: <code>{}</code>\n\
-                   <b>{ep_b}</b>: <code>{}</code>\n",
-                truncate_address(hash_a),
-                truncate_address(hash_b),
+                "\n  <b>{ep_a}</b>: <a href=\"{explorer}/explorer/block/{hash_a}\">{short_a}</a>\n\
+                   <b>{ep_b}</b>: <a href=\"{explorer}/explorer/block/{hash_b}\">{short_b}</a>\n",
+                short_a = truncate_address(hash_a),
+                short_b = truncate_address(hash_b),
             ));
         }
 

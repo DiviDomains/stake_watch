@@ -4,6 +4,7 @@ use tracing::{debug, info, warn};
 use crate::db::{self, DbPool};
 use crate::notifier::Notifier;
 use crate::rpc::{Block, Transaction};
+use crate::utils::truncate_address;
 
 // ---------------------------------------------------------------------------
 // Alert type constants
@@ -83,6 +84,7 @@ struct Anomaly {
     description: String,
     value: f64,
     default_threshold: f64,
+    txid: Option<String>,
 }
 
 /// Analyzes each block's transactions for anomalous patterns and notifies
@@ -108,6 +110,7 @@ impl AlertAnalyzer {
 
         // ---- Per-transaction analysis ----
         let mut block_total_value: f64 = 0.0;
+        let explorer = &self.notifier.explorer_url;
 
         for tx in transactions {
             let tx_total: f64 = tx.vout.iter().map(|v| v.value).sum();
@@ -115,17 +118,22 @@ impl AlertAnalyzer {
 
             let input_count = tx.vin.len();
             let output_count = tx.vout.len();
+            let short_txid = truncate_address(&tx.txid);
 
             // Large transaction
             if tx_total >= DEFAULT_LARGE_TX {
                 anomalies.push(Anomaly {
                     alert_type: ALERT_LARGE_TX,
                     description: format!(
-                        "Large transaction detected: {:.2} DIVI in tx {}",
-                        tx_total, tx.txid
+                        "Large transaction detected: {:.2} DIVI in <a href=\"{explorer}/explorer/tx/{txid}\">{short}</a>",
+                        tx_total,
+                        explorer = explorer,
+                        txid = tx.txid,
+                        short = short_txid,
                     ),
                     value: tx_total,
                     default_threshold: DEFAULT_LARGE_TX,
+                    txid: Some(tx.txid.clone()),
                 });
             }
 
@@ -133,9 +141,16 @@ impl AlertAnalyzer {
             if input_count as f64 >= DEFAULT_MANY_INPUTS {
                 anomalies.push(Anomaly {
                     alert_type: ALERT_MANY_INPUTS,
-                    description: format!("Transaction with {} inputs: tx {}", input_count, tx.txid),
+                    description: format!(
+                        "Transaction with {} inputs: <a href=\"{explorer}/explorer/tx/{txid}\">{short}</a>",
+                        input_count,
+                        explorer = explorer,
+                        txid = tx.txid,
+                        short = short_txid,
+                    ),
                     value: input_count as f64,
                     default_threshold: DEFAULT_MANY_INPUTS,
+                    txid: Some(tx.txid.clone()),
                 });
             }
 
@@ -144,11 +159,15 @@ impl AlertAnalyzer {
                 anomalies.push(Anomaly {
                     alert_type: ALERT_MANY_OUTPUTS,
                     description: format!(
-                        "Transaction with {} outputs: tx {}",
-                        output_count, tx.txid
+                        "Transaction with {} outputs: <a href=\"{explorer}/explorer/tx/{txid}\">{short}</a>",
+                        output_count,
+                        explorer = explorer,
+                        txid = tx.txid,
+                        short = short_txid,
                     ),
                     value: output_count as f64,
                     default_threshold: DEFAULT_MANY_OUTPUTS,
+                    txid: Some(tx.txid.clone()),
                 });
             }
 
@@ -159,11 +178,15 @@ impl AlertAnalyzer {
                         anomalies.push(Anomaly {
                             alert_type: ALERT_OP_RETURN,
                             description: format!(
-                                "OP_RETURN output in tx {} (output #{})",
-                                tx.txid, vout.n
+                                "OP_RETURN output (output #{n}) in <a href=\"{explorer}/explorer/tx/{txid}\">{short}</a>",
+                                n = vout.n,
+                                explorer = explorer,
+                                txid = tx.txid,
+                                short = short_txid,
                             ),
                             value: 1.0,
                             default_threshold: 0.0,
+                            txid: Some(tx.txid.clone()),
                         });
                     }
                 }
@@ -175,11 +198,16 @@ impl AlertAnalyzer {
                         anomalies.push(Anomaly {
                             alert_type: ALERT_UNUSUAL_SCRIPT,
                             description: format!(
-                                "Unusual script type '{}' in tx {} (output #{})",
-                                script_type, tx.txid, vout.n
+                                "Unusual script type &#39;{script_type}&#39; (output #{n}) in <a href=\"{explorer}/explorer/tx/{txid}\">{short}</a>",
+                                script_type = script_type,
+                                n = vout.n,
+                                explorer = explorer,
+                                txid = tx.txid,
+                                short = short_txid,
                             ),
                             value: 1.0,
                             default_threshold: 0.0,
+                            txid: Some(tx.txid.clone()),
                         });
                     }
                 }
@@ -188,14 +216,20 @@ impl AlertAnalyzer {
 
         // ---- Block-level analysis ----
         if block_total_value >= DEFAULT_LARGE_BLOCK {
+            let short_hash = truncate_address(&block.hash);
             anomalies.push(Anomaly {
                 alert_type: ALERT_LARGE_BLOCK,
                 description: format!(
-                    "Large block detected: {:.2} DIVI total in block {} (height {})",
-                    block_total_value, block.hash, block.height
+                    "Large block detected: {:.2} DIVI total in <a href=\"{explorer}/explorer/block/{hash}\">{short}</a> (height {})",
+                    block_total_value,
+                    block.height,
+                    explorer = explorer,
+                    hash = block.hash,
+                    short = short_hash,
                 ),
                 value: block_total_value,
                 default_threshold: DEFAULT_LARGE_BLOCK,
+                txid: None,
             });
         }
 
@@ -247,14 +281,30 @@ impl AlertAnalyzer {
                 continue;
             }
 
-            // Format the notification message
-            let message = format!(
-                "\u{26a0}\u{fe0f} *Block Alert* (height {})\n\n\
-                 Type: `{}`\n\
-                 {}\n\n\
-                 Block: `{}`",
-                block.height, anomaly.alert_type, anomaly.description, block.hash,
+            // Format the notification message (HTML)
+            let explorer = &self.notifier.explorer_url;
+            let short_hash = truncate_address(&block.hash);
+            let mut message = format!(
+                "\u{26a0}\u{fe0f} <b>Block Alert</b> (height <a href=\"{explorer}/explorer/block/{hash}\">{height}</a>)\n\n\
+                 Type: <code>{alert_type}</code>\n\
+                 {description}\n\n\
+                 Block: <a href=\"{explorer}/explorer/block/{hash}\">{short_hash}</a>",
+                explorer = explorer,
+                hash = block.hash,
+                height = block.height,
+                alert_type = anomaly.alert_type,
+                description = anomaly.description,
+                short_hash = short_hash,
             );
+            if let Some(ref txid) = anomaly.txid {
+                let short_txid = truncate_address(txid);
+                message.push_str(&format!(
+                    "\n<a href=\"{explorer}/explorer/tx/{txid}\">View transaction ({short_txid})</a>",
+                    explorer = explorer,
+                    txid = txid,
+                    short_txid = short_txid,
+                ));
+            }
 
             for chat_id in &all_chat_ids {
                 if let Err(e) = self.notifier.send_message(*chat_id, &message).await {
