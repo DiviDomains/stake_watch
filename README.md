@@ -8,16 +8,20 @@
 
 ## Features
 
-- **Real-time staking reward notifications** - Detects when your address stakes and sends immediate updates
-- **Lottery win detection and alerts** - Alerts users who win Divi lottery tickets
-- **Missed stake detection** - Alerts if an address hasn't staked when expected based on balance and network supply
-- **Staking frequency analysis** - Estimates expected staking interval based on balance vs network supply
-- **Blockchain anomaly detection** - Alerts on unusual transactions (large transfers, many inputs/outputs, OP_RETURN data, non-standard scripts)
-- **Fork detection** - Monitors multiple blockchain endpoints and alerts on chain forks
-- **Multi-backend support** - Choose from services.divi.domains (real-time), chainz (polling), or custom Divi node (RPC)
-- **Cross-platform binaries** - Pre-built for Linux, macOS (Intel & Apple Silicon), and Windows
-- **SQLite persistence** - Stores user data, stakes, and alerts locally with no external database required
-- **Admin controls** - Manage fork detection endpoints and configure alert thresholds
+- **Real-time staking reward notifications** — Detects when your address stakes and sends immediate updates with clickable explorer links
+- **Lottery win detection** — Alerts users who win Divi lottery tickets with per-address notifications
+- **Lottery block summaries** — Subscribable alert that shows all lottery winners grouped by prize tier with next lottery block height
+- **Vault staking support** — Full support for Divi vault addresses including balance display, stake detection, and historical backfill
+- **Missed stake detection** — Alerts if an address hasn't staked when expected (Treasury/Charity excluded automatically)
+- **Staking frequency analysis** — Estimates expected staking interval based on balance vs network supply
+- **Blockchain anomaly detection** — Alerts on unusual transactions (large transfers, many inputs/outputs, OP_RETURN data, non-standard scripts)
+- **Fork detection** — Monitors multiple blockchain endpoints and alerts on chain forks
+- **Telegram Mini App** — Full web dashboard accessible via the bot's Menu button at [stakewatch.divi.cx](https://stakewatch.divi.cx), featuring portfolio overview, address detail with staking calculator, block explorer, watch/alert management, and live block feed via SSE
+- **Linked notifications** — All Telegram messages include clickable links to addresses, transactions, and blocks in the web explorer
+- **Multi-backend support** — Choose from services.divi.domains (real-time), chainz (polling), or custom Divi node (RPC)
+- **Cross-platform binaries** — Pre-built for Linux, macOS (Intel & Apple Silicon), and Windows
+- **SQLite persistence** — Stores user data, stakes, and alerts locally with no external database required
+- **Admin controls** — Manage fork detection endpoints and configure alert thresholds
 
 ## Architecture
 
@@ -26,6 +30,7 @@
 ```mermaid
 graph TD
     A[Telegram Users] <-->|Commands & Notifications| B[Stake Watch Bot]
+    A <-->|Mini App| W[Web App - axum]
     B --> C{Block Monitor}
     C -->|Socket.IO| D[services.divi.domains]
     C -->|Polling| E[chainz.cryptoid.info]
@@ -39,6 +44,8 @@ graph TD
     B --> M[Fork Detector]
     M --> N[Multi-Endpoint Comparison]
     B --> O[(SQLite Database)]
+    W --> O
+    W -->|REST API + SSE| A
 ```
 
 ### Component Architecture
@@ -58,6 +65,7 @@ graph LR
         block_processor["block_processor.rs<br/>Block Processing"]
         alert_analyzer["alert_analyzer.rs<br/>Anomaly Detection"]
         fork_detector["fork_detector.rs<br/>Fork Detection"]
+        webapp["webapp/<br/>axum REST API + Static"]
         utils["utils.rs<br/>Utilities"]
     end
 
@@ -75,6 +83,8 @@ graph LR
     notifier --> db
     stake_analyzer --> rpc
     alert_analyzer --> db
+    webapp --> db
+    webapp --> rpc
 ```
 
 ## Bot Commands
@@ -109,6 +119,7 @@ Subscribe to blockchain anomalies with customizable thresholds:
 | `many_outputs` | Transaction has many outputs | 10 outputs | Yes |
 | `op_return` | Transaction contains OP_RETURN data | N/A | No |
 | `unusual_script` | Non-standard script type detected | N/A | No |
+| `lottery_block` | Summary of all lottery block winners | N/A | No |
 | `anything_unusual` | Subscribe to all anomalies | Defaults | Yes (per type) |
 
 ## Quick Start
@@ -467,6 +478,32 @@ Any user can subscribe to fork alerts:
 # View status
 /forkstatus
 ```
+
+## Web App (Telegram Mini App)
+
+Stake Watch includes a full web dashboard served as a Telegram Mini App, accessible via the bot's Menu button.
+
+**URL:** [stakewatch.divi.cx](https://stakewatch.divi.cx)
+
+### Pages
+
+| Page | Description |
+|------|-------------|
+| **Dashboard** | Portfolio overview with address cards showing balance, health status, stake frequency, and last stake time |
+| **Address Detail** | Detailed staking analysis with calculator, reward history, and performance charts |
+| **Block Explorer** | Browse blocks, transactions, and addresses with linked navigation |
+| **Watches** | Add, remove, reorder, and label watched addresses |
+| **Alerts** | Subscribe to blockchain alert types (including lottery block summaries) |
+| **Block Feed** | Live SSE stream of new blocks as they arrive |
+| **Admin (Users)** | Admin-only panel for viewing registered users |
+
+### Authentication
+
+The web app authenticates users via Telegram's `initData` HMAC-SHA256 validation, ensuring only the Telegram user who opened the Mini App can access their data.
+
+### API
+
+The REST API runs on port 18095 (reverse-proxied via nginx) and provides 16+ endpoints for watches, alerts, explorer data, staking analysis, and SSE block streaming.
 
 ## Deployment
 
