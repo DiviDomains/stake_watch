@@ -12,6 +12,8 @@ pub struct AppConfig {
     pub general: GeneralConfig,
     pub backend: BackendConfig,
     #[serde(default)]
+    pub chain: ChainConfig,
+    #[serde(default)]
     pub fork_detection: ForkDetectionConfig,
 }
 
@@ -113,6 +115,76 @@ pub struct ForkEndpointConfig {
 }
 
 // ---------------------------------------------------------------------------
+// ChainConfig -- chain-specific parameters for multi-chain support
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChainConfig {
+    /// Human-readable chain name (e.g., "Divi", "PIVX")
+    #[serde(default = "default_chain_name")]
+    pub name: String,
+    /// Ticker symbol used in user-facing messages (e.g., "DIVI", "PIV")
+    #[serde(default = "default_chain_ticker")]
+    pub ticker: String,
+    /// Valid address prefixes for offline validation (e.g., ["D", "y"])
+    #[serde(default = "default_address_prefixes")]
+    pub address_prefixes: Vec<String>,
+    /// Addresses that receive block rewards but are NOT staking (treasury, charity, etc.)
+    /// Excluded from missed-stake alerts.
+    #[serde(default = "default_excluded_addresses")]
+    pub excluded_addresses: Vec<String>,
+    /// Whether this chain has a lottery system
+    #[serde(default = "default_true")]
+    pub has_lottery: bool,
+    /// Whether this chain has vault addresses
+    #[serde(default = "default_true")]
+    pub has_vaults: bool,
+    /// Whether this chain has masternodes
+    #[serde(default)]
+    pub has_masternodes: bool,
+    /// Block time in seconds (used for staking frequency calculation)
+    #[serde(default = "default_block_time")]
+    pub block_time_secs: u64,
+}
+
+impl Default for ChainConfig {
+    fn default() -> Self {
+        Self {
+            name: default_chain_name(),
+            ticker: default_chain_ticker(),
+            address_prefixes: default_address_prefixes(),
+            excluded_addresses: default_excluded_addresses(),
+            has_lottery: true,
+            has_vaults: true,
+            has_masternodes: false,
+            block_time_secs: default_block_time(),
+        }
+    }
+}
+
+fn default_chain_name() -> String {
+    "Divi".to_string()
+}
+fn default_chain_ticker() -> String {
+    "DIVI".to_string()
+}
+fn default_address_prefixes() -> Vec<String> {
+    vec!["D".to_string(), "y".to_string()]
+}
+fn default_excluded_addresses() -> Vec<String> {
+    vec![
+        "DPhJsztbZafDc1YeyrRqSjmKjkmLJpQpUn".to_string(),
+        "DPujt2XAdHyRcZNB5ySZBBVKjzY2uXZGYq".to_string(),
+    ]
+}
+fn default_true() -> bool {
+    true
+}
+fn default_block_time() -> u64 {
+    60
+}
+
+// ---------------------------------------------------------------------------
 // AppConfig loading
 // ---------------------------------------------------------------------------
 
@@ -131,6 +203,8 @@ impl AppConfig {
         config.validate()?;
 
         info!(
+            chain = %config.chain.name,
+            ticker = %config.chain.ticker,
             backend = %config.backend.backend_type,
             rpc_url = %config.backend.rpc_url,
             db_path = %config.general.db_path,
