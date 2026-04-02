@@ -1,0 +1,39 @@
+# PIVX Node Configuration for Stake Watch
+#
+# Requires PIVX node with these flags in ~/.pivx/pivx.conf:
+#   addressindex=1
+#   txindex=1
+#   server=1
+#   rpcuser=pivxrpc
+#   rpcpassword=<your password>
+
+[chain]
+name = "PIVX"
+ticker = "PIV"
+address_prefixes = ["D", "S"]
+excluded_addresses = []
+has_lottery = false
+has_vaults = false
+has_masternodes = true
+block_time_secs = 60
+
+[general]
+db_path = "./data/stake_watch_pivx.db"
+network_staking_supply = 50_000_000
+alert_multiplier = 3
+alert_check_interval_secs = 300
+max_watches_per_user = 20
+
+[backend]
+type = "polling"
+rpc_url = "http://127.0.0.1:51473"
+explorer_url = "https://pivx.cri.xyz"
+
+[backend.polling]
+interval_secs = 60
+
+[backend.rpc_auth]
+enabled = true
+
+[fork_detection]
+enabled = false

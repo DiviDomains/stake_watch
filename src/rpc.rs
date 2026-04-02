@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tracing::{debug, warn};
 
-use crate::config::{BackendConfig, Secrets};
+use crate::config::{BackendConfig, ChainConfig, Secrets};
 
 // ---------------------------------------------------------------------------
 // Response types
@@ -333,10 +333,11 @@ pub struct ChainzClient {
     client: Client,
     base_url: String,
     api_key: Option<String>,
+    address_prefixes: Vec<String>,
 }
 
 impl ChainzClient {
-    pub fn new(base_url: String, api_key: Option<String>) -> Self {
+    pub fn new(base_url: String, api_key: Option<String>, address_prefixes: Vec<String>) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
@@ -345,6 +346,7 @@ impl ChainzClient {
             client,
             base_url,
             api_key,
+            address_prefixes,
         }
     }
 
@@ -443,10 +445,13 @@ impl RpcClient for ChainzClient {
     }
 
     async fn validate_address(&self, address: &str) -> Result<AddressValidation> {
-        // Offline validation: Divi addresses start with 'D' (mainnet) or 'y' (testnet),
-        // are 25-34 characters, and use base58 charset.
+        // Offline validation: address must start with a configured prefix,
+        // be 25-34 characters, and use base58 charset.
         let base58_chars = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-        let is_valid = (address.starts_with('D') || address.starts_with('y'))
+        let is_valid = self
+            .address_prefixes
+            .iter()
+            .any(|p| address.starts_with(p.as_str()))
             && (25..=34).contains(&address.len())
             && address.chars().all(|c| base58_chars.contains(c));
         Ok(AddressValidation { isvalid: is_valid })
@@ -474,11 +479,16 @@ impl RpcClient for ChainzClient {
 ///
 /// If the rpc_url contains "chainz.cryptoid.info", a `ChainzClient` is
 /// created; otherwise a `JsonRpcClient` is used.
-pub fn create_rpc_client(config: &BackendConfig, secrets: &Secrets) -> Box<dyn RpcClient> {
+pub fn create_rpc_client(
+    config: &BackendConfig,
+    secrets: &Secrets,
+    chain: &ChainConfig,
+) -> Box<dyn RpcClient> {
     if config.rpc_url.contains("chainz.cryptoid.info") {
         Box::new(ChainzClient::new(
             config.rpc_url.clone(),
             secrets.chainz_api_key.clone(),
+            chain.address_prefixes.clone(),
         ))
     } else {
         let (user, pass) = if config.rpc_auth.as_ref().is_some_and(|a| a.enabled) {

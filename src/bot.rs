@@ -126,13 +126,16 @@ async fn command_handler(
     let defaults_added = ensure_user_registered(&state, telegram_id, username.as_deref());
     if defaults_added {
         // Backfill history for newly added default watches
-        for (address, _) in DEFAULT_WATCHES {
+        for (address, _) in default_watches(&state.config) {
             let rpc = Arc::clone(&state.rpc);
             let db = Arc::clone(&state.db);
-            let addr = address.to_string();
+            let has_vaults = state.config.chain.has_vaults;
+            let excluded = state.config.chain.excluded_addresses.clone();
             tokio::spawn(async move {
-                if let Err(e) = StakeAnalyzer::backfill_stakes(&rpc, &db, &addr).await {
-                    tracing::warn!(address = %addr, error = %e, "Default watch backfill failed");
+                if let Err(e) =
+                    StakeAnalyzer::backfill_stakes(&rpc, &db, &address, has_vaults, &excluded).await
+                {
+                    tracing::warn!(address = %address, error = %e, "Default watch backfill failed");
                 }
             });
         }
@@ -184,10 +187,15 @@ async fn command_handler(
 // ---------------------------------------------------------------------------
 
 /// Default watched addresses added for every new user.
-const DEFAULT_WATCHES: &[(&str, &str)] = &[
-    ("DPhJsztbZafDc1YeyrRqSjmKjkmLJpQpUn", "Divi Treasury"),
-    ("DPujt2XAdHyRcZNB5ySZBBVKjzY2uXZGYq", "Divi Charity"),
-];
+/// Built dynamically from chain config excluded_addresses.
+fn default_watches(config: &AppConfig) -> Vec<(String, String)> {
+    config
+        .chain
+        .excluded_addresses
+        .iter()
+        .map(|addr| (addr.clone(), format!("{} System", config.chain.name)))
+        .collect()
+}
 
 /// Ensure the user is registered. Add default watches only if user has zero watches
 /// (don't re-add defaults that the user deliberately removed).
@@ -196,14 +204,14 @@ fn ensure_user_registered(state: &BotState, telegram_id: i64, username: Option<&
     let _ = db::add_user(&state.db, telegram_id, username);
     if let Ok(count) = db::get_watch_count_for_user(&state.db, telegram_id) {
         if count == 0 {
-            for (address, label) in DEFAULT_WATCHES {
+            for (address, label) in default_watches(&state.config) {
                 let _ = db::add_watch_full(
                     &state.db,
                     telegram_id,
-                    address,
-                    Some(label),
+                    &address,
+                    Some(&label),
                     1000,
-                    false, // Treasury/Charity excluded from portfolio by default
+                    false, // Excluded addresses excluded from portfolio by default
                 );
             }
             return true;
@@ -220,17 +228,23 @@ async fn handle_start(
     // User + defaults already ensured by ensure_user_registered
     info!(telegram_id, ?username, "User started bot");
 
-    Ok(concat!(
-        "<b>Welcome to Stake Watch!</b>\n\n",
-        "I monitor Divi blockchain addresses and notify you about staking rewards, ",
-        "lottery wins, and blockchain anomalies.\n\n",
-        "<b>Quick start:</b>\n",
-        "1. /watch &lt;address&gt; [label] - Start monitoring an address\n",
-        "2. /analyze - View staking performance analysis\n",
-        "3. /alerts - Set up blockchain alerts\n\n",
-        "Use /help to see all available commands.",
-    )
-    .to_string())
+    let chain = &_state.config.chain;
+    Ok(format!(
+        "<b>Welcome to Stake Watch!</b>\n\n\
+         I monitor {} blockchain addresses and notify you about staking rewards{} \
+         and blockchain anomalies.\n\n\
+         <b>Quick start:</b>\n\
+         1. /watch &lt;address&gt; [label] - Start monitoring an address\n\
+         2. /analyze - View staking performance analysis\n\
+         3. /alerts - Set up blockchain alerts\n\n\
+         Use /help to see all available commands.",
+        chain.name,
+        if chain.has_lottery {
+            ", lottery wins,"
+        } else {
+            ""
+        },
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -287,9 +301,19 @@ async fn handle_watch(state: &BotState, telegram_id: i64, arg: &str) -> Result<S
     let address = parts.next().unwrap().trim();
     let label = parts.next().map(|s| s.trim()).filter(|s| !s.is_empty());
 
-    // Validate address format
-    if !address.starts_with('D') {
-        return Ok("Invalid address: must start with 'D' (mainnet Divi address).".to_string());
+    // Validate address format against configured prefixes
+    let valid_prefix = state
+        .config
+        .chain
+        .address_prefixes
+        .iter()
+        .any(|p| address.starts_with(p.as_str()));
+    if !valid_prefix {
+        let prefixes = state.config.chain.address_prefixes.join("' or '");
+        return Ok(format!(
+            "Invalid address: must start with '{}' ({} address).",
+            prefixes, state.config.chain.name
+        ));
     }
 
     // Validate via RPC
@@ -297,8 +321,9 @@ async fn handle_watch(state: &BotState, telegram_id: i64, arg: &str) -> Result<S
         Ok(validation) => {
             if !validation.isvalid {
                 return Ok(format!(
-                    "Invalid address: <code>{}</code> is not a valid Divi address.",
-                    truncate_address(address)
+                    "Invalid address: <code>{}</code> is not a valid {} address.",
+                    truncate_address(address),
+                    state.config.chain.name
                 ));
             }
         }
@@ -333,8 +358,12 @@ async fn handle_watch(state: &BotState, telegram_id: i64, arg: &str) -> Result<S
     let rpc = Arc::clone(&state.rpc);
     let db = Arc::clone(&state.db);
     let addr = address.to_string();
+    let has_vaults = state.config.chain.has_vaults;
+    let excluded = state.config.chain.excluded_addresses.clone();
     tokio::spawn(async move {
-        if let Err(e) = StakeAnalyzer::backfill_stakes(&rpc, &db, &addr).await {
+        if let Err(e) =
+            StakeAnalyzer::backfill_stakes(&rpc, &db, &addr, has_vaults, &excluded).await
+        {
             warn!(address = %addr, error = %e, "Backfill failed");
         }
     });
@@ -459,7 +488,7 @@ async fn handle_analyze(state: &BotState, telegram_id: i64, arg: &str) -> Result
 
         if regular.balance > 0 {
             (regular, false)
-        } else {
+        } else if state.config.chain.has_vaults {
             // Address index returned 0 -- try vault balance (only_vaults=true)
             match state.rpc.get_vault_balance(&address).await {
                 Ok(vault_bal) if vault_bal.balance > 0 => {
@@ -468,6 +497,8 @@ async fn handle_analyze(state: &BotState, telegram_id: i64, arg: &str) -> Result
                 }
                 _ => (regular, false),
             }
+        } else {
+            (regular, false)
         }
     };
 
@@ -476,7 +507,7 @@ async fn handle_analyze(state: &BotState, telegram_id: i64, arg: &str) -> Result
     let current_height = state.rpc.get_block_count().await.unwrap_or(0);
 
     // Use block height to determine when stakes happened (not detected_at
-    // which is just the DB insertion time). Divi blocks are ~60 seconds apart.
+    // which is just the DB insertion time). Blocks are ~block_time_secs apart.
     let blocks_24h = 24 * 60; // ~1,440 blocks
     let blocks_7d = 7 * 24 * 60; // ~10,080 blocks
     let blocks_30d = 30 * 24 * 60; // ~43,200 blocks
@@ -507,6 +538,7 @@ async fn handle_analyze(state: &BotState, telegram_id: i64, arg: &str) -> Result
     let expected_secs = StakeAnalyzer::compute_expected_interval(
         balance.balance,
         state.config.general.network_staking_supply,
+        state.config.chain.block_time_secs,
     );
 
     // Look up the watch to get last_stake_at and label
@@ -561,15 +593,16 @@ async fn handle_analyze(state: &BotState, telegram_id: i64, arg: &str) -> Result
 
     // For vault addresses, show "Total rewards earned" from DB instead of
     // "Total received" which is inflated by recycled UTXO values.
+    let ticker = &state.config.chain.ticker;
     let received_line = if is_vault {
         let total_rewards = db::sum_stake_rewards(&state.db, &address).unwrap_or(0);
         format!(
-            "<b>Total rewards earned:</b> {} DIVI",
+            "<b>Total rewards earned:</b> {} {ticker}",
             satoshi_to_divi(total_rewards)
         )
     } else {
         format!(
-            "<b>Total received:</b> {} DIVI",
+            "<b>Total received:</b> {} {ticker}",
             satoshi_to_divi(balance.received)
         )
     };
@@ -577,10 +610,10 @@ async fn handle_analyze(state: &BotState, telegram_id: i64, arg: &str) -> Result
     Ok(format!(
         "<b>Staking Analysis</b>\n\
          <code>{address}</code>{label}\n\n\
-         <b>Balance:</b> {} DIVI{vault_indicator}\n\
+         <b>Balance:</b> {} {ticker}{vault_indicator}\n\
          {received_line}\n\n\
          <b>Stakes (24h / 7d / 30d):</b> {stakes_24h} / {stakes_7d} / {stakes_30d}\n\
-         <b>Avg stake amount:</b> {} DIVI\n\n\
+         <b>Avg stake amount:</b> {} {ticker}\n\n\
          <b>Expected frequency:</b> {expected_str}\n\
          <b>Last stake:</b> {last_stake_str}\n\
          <b>Health:</b> {health}",

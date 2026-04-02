@@ -386,9 +386,13 @@ async fn get_watches(
             let rpc = Arc::clone(&state.rpc);
             let db = state.db.clone();
             let addr = w.address.clone();
+            let has_vaults = state.config.chain.has_vaults;
+            let excluded = state.config.chain.excluded_addresses.clone();
             tokio::spawn(async move {
-                if let Err(e) =
-                    crate::stake_analyzer::StakeAnalyzer::backfill_stakes(&rpc, &db, &addr).await
+                if let Err(e) = crate::stake_analyzer::StakeAnalyzer::backfill_stakes(
+                    &rpc, &db, &addr, has_vaults, &excluded,
+                )
+                .await
                 {
                     tracing::warn!(address = %addr, error = %e, "Auto-backfill failed");
                 }
@@ -490,8 +494,12 @@ async fn add_watch(
     let rpc = Arc::clone(&state.rpc);
     let db = state.db.clone();
     let addr = address.to_string();
+    let has_vaults = state.config.chain.has_vaults;
+    let excluded = state.config.chain.excluded_addresses.clone();
     tokio::spawn(async move {
-        if let Err(e) = StakeAnalyzer::backfill_stakes(&rpc, &db, &addr).await {
+        if let Err(e) =
+            StakeAnalyzer::backfill_stakes(&rpc, &db, &addr, has_vaults, &excluded).await
+        {
             warn!(address = %addr, error = %e, "Backfill failed");
         }
     });
@@ -699,6 +707,7 @@ async fn get_analysis(
     let expected_secs = StakeAnalyzer::compute_expected_interval(
         balance.balance,
         state.config.general.network_staking_supply,
+        state.config.chain.block_time_secs,
     );
 
     let last_stake_info = if let Some(latest) = stakes.first() {

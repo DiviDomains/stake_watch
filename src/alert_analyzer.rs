@@ -35,8 +35,8 @@ pub const VALID_ALERT_TYPES: &[&str] = &[
 // Default thresholds
 // ---------------------------------------------------------------------------
 
-pub const DEFAULT_LARGE_TX: f64 = 1_000_000.0; // 1M DIVI
-pub const DEFAULT_LARGE_BLOCK: f64 = 10_000_000.0; // 10M DIVI
+pub const DEFAULT_LARGE_TX: f64 = 1_000_000.0; // 1M coins
+pub const DEFAULT_LARGE_BLOCK: f64 = 10_000_000.0; // 10M coins
 pub const DEFAULT_MANY_INPUTS: f64 = 10.0;
 pub const DEFAULT_MANY_OUTPUTS: f64 = 10.0;
 

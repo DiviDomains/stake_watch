@@ -18,14 +18,16 @@ pub struct Notifier {
     bot: Bot,
     db: DbPool,
     pub explorer_url: String,
+    pub ticker: String,
 }
 
 impl Notifier {
-    pub fn new(bot: Bot, db: DbPool, explorer_url: String) -> Self {
+    pub fn new(bot: Bot, db: DbPool, explorer_url: String, ticker: String) -> Self {
         Self {
             bot,
             db,
             explorer_url,
+            ticker,
         }
     }
 
@@ -49,12 +51,13 @@ impl Notifier {
         format!(
             "<b>Staking Reward Received</b>\n\n\
              Address: <a href=\"{base}/address/{address}\">{short_addr}</a>{label_line}\n\
-             Amount: <b>{amount} DIVI</b>\n\
+             Amount: <b>{amount} {ticker}</b>\n\
              Block: <a href=\"{base}/tx/{txid}\">{block_height}</a>\n\n\
              <a href=\"{base}/tx/{txid}\">View transaction</a>",
             base = self.explorer_url,
             short_addr = truncate_address(address),
             amount = satoshi_to_divi(amount_satoshis),
+            ticker = self.ticker,
         )
     }
 
@@ -75,12 +78,13 @@ impl Notifier {
             "<b>Lottery Win!</b>\n\n\
              Congratulations! Your address won the lottery!\n\n\
              Address: <a href=\"{base}/address/{address}\">{short_addr}</a>{label_line}\n\
-             Amount: <b>{amount} DIVI</b>\n\
+             Amount: <b>{amount} {ticker}</b>\n\
              Block: <a href=\"{base}/tx/{txid}\">{block_height}</a>\n\n\
              <a href=\"{base}/tx/{txid}\">View transaction</a>",
             base = self.explorer_url,
             short_addr = truncate_address(address),
             amount = satoshi_to_divi(amount_satoshis),
+            ticker = self.ticker,
         )
     }
 
@@ -109,7 +113,7 @@ impl Notifier {
         format!(
             "<b>Missed Stake Warning</b>\n\n\
              Address: <a href=\"{base}/address/{address}\">{short_addr}</a>{label_line}\n\
-             Balance: {balance} DIVI\n\n\
+             Balance: {balance} {ticker}\n\n\
              Expected stake every: <b>{expected_str}</b>\n\
              Time since last stake: <b>{elapsed_str}</b> ({overdue_factor:.1}x expected)\n\n\
              Your address may have stopped staking. Please check:\n\
@@ -119,6 +123,7 @@ impl Notifier {
             base = self.explorer_url,
             short_addr = truncate_address(address),
             balance = satoshi_to_divi(balance_satoshis),
+            ticker = self.ticker,
         )
     }
 
@@ -159,13 +164,15 @@ impl Notifier {
         block_height: u64,
         block_hash: &str,
         winners: &[(String, f64)], // (address, amount)
+        chain_name: &str,
     ) -> String {
         const LOTTERY_INTERVAL: u64 = 10_080;
         let next_height = block_height + LOTTERY_INTERVAL;
         let explorer = &self.explorer_url;
+        let ticker = &self.ticker;
 
         let mut text = format!(
-            "\u{1f3b0} <b>Divi Lottery Block Winners</b>\n\
+            "\u{1f3b0} <b>{chain_name} Lottery Block Winners</b>\n\
              From Block <a href=\"{explorer}/block/{block_hash}\">{block_height}</a>\n"
         );
 
@@ -180,9 +187,9 @@ impl Notifier {
         for (neg_satoshis, addrs) in &tiers {
             let amount_str = satoshi_to_divi(-neg_satoshis);
             let label = if addrs.len() == 1 {
-                format!("\n<b>{amount_str} DIVI winner:</b>")
+                format!("\n<b>{amount_str} {ticker} winner:</b>")
             } else {
-                format!("\n<b>{amount_str} DIVI winners:</b>")
+                format!("\n<b>{amount_str} {ticker} winners:</b>")
             };
             text.push_str(&label);
             text.push('\n');
@@ -190,7 +197,7 @@ impl Notifier {
             for addr in addrs {
                 let short = truncate_address(addr);
                 text.push_str(&format!(
-                    "\u{1f39f}\u{fe0f} <a href=\"{explorer}/address/{addr}\">{short}</a> - {amount_str} DIVI\n",
+                    "\u{1f39f}\u{fe0f} <a href=\"{explorer}/address/{addr}\">{short}</a> - {amount_str} {ticker}\n",
                 ));
             }
         }

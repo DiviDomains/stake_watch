@@ -3,25 +3,19 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing::{debug, info, warn};
 
-use crate::config::GeneralConfig;
+use crate::config::{ChainConfig, GeneralConfig};
 use crate::db::{self, DbPool};
 use crate::notifier::Notifier;
 use crate::rpc::RpcClient;
 use crate::utils::satoshi_to_divi;
 
-// ---------------------------------------------------------------------------
-// Known non-staking addresses that receive block reward payments
-// ---------------------------------------------------------------------------
-
-pub const TREASURY_ADDRESS: &str = "DPhJsztbZafDc1YeyrRqSjmKjkmLJpQpUn";
-pub const CHARITY_ADDRESS: &str = "DPujt2XAdHyRcZNB5ySZBBVKjzY2uXZGYq";
-
 /// Return the appropriate event type for a coinbase output to the given address.
-/// Treasury and Charity receive "payment" type; all others receive "stake".
-pub fn event_type_for_address(address: &str) -> &'static str {
-    match address {
-        TREASURY_ADDRESS | CHARITY_ADDRESS => "payment",
-        _ => "stake",
+/// Excluded addresses (treasury, charity, etc.) receive "payment" type; all others receive "stake".
+pub fn event_type_for_address(address: &str, excluded_addresses: &[String]) -> &'static str {
+    if excluded_addresses.iter().any(|a| a == address) {
+        "payment"
+    } else {
+        "stake"
     }
 }
 
@@ -37,6 +31,7 @@ pub struct StakeAnalyzer {
     db: DbPool,
     notifier: Arc<Notifier>,
     config: GeneralConfig,
+    chain_config: ChainConfig,
 }
 
 impl StakeAnalyzer {
@@ -45,12 +40,14 @@ impl StakeAnalyzer {
         db: DbPool,
         notifier: Arc<Notifier>,
         config: GeneralConfig,
+        chain_config: ChainConfig,
     ) -> Self {
         Self {
             rpc,
             db,
             notifier,
             config,
+            chain_config,
         }
     }
 
@@ -60,17 +57,21 @@ impl StakeAnalyzer {
 
     /// Compute the expected time between staking rewards in seconds.
     ///
-    /// The Divi staking model is essentially a Poisson process where the
+    /// The staking model is essentially a Poisson process where the
     /// probability of winning a block is proportional to your share of the
-    /// total staking supply. With ~60-second block times:
+    /// total staking supply. With configurable block times:
     ///
     ///   P(win per block) = balance / network_supply
     ///   expected_blocks  = 1 / P
-    ///   expected_seconds = expected_blocks * 60
+    ///   expected_seconds = expected_blocks * block_time_secs
     ///
     /// The result is clamped to [1 hour, 365 days]. Returns `f64::INFINITY`
     /// if the balance is zero or negative.
-    pub fn compute_expected_interval(balance_satoshis: i64, network_supply: u64) -> f64 {
+    pub fn compute_expected_interval(
+        balance_satoshis: i64,
+        network_supply: u64,
+        block_time_secs: u64,
+    ) -> f64 {
         let balance_divi = balance_satoshis as f64 / 1e8;
 
         if balance_divi <= 0.0 {
@@ -87,7 +88,7 @@ impl StakeAnalyzer {
         }
 
         let expected_blocks = 1.0 / probability;
-        let expected_secs = expected_blocks * 60.0;
+        let expected_secs = expected_blocks * block_time_secs as f64;
 
         // Clamp to reasonable bounds
         const MIN_INTERVAL: f64 = 3600.0; // 1 hour
@@ -130,8 +131,13 @@ impl StakeAnalyzer {
                 continue;
             }
 
-            // Treasury/Charity receive payments, not stakes — skip them
-            if watch.address == TREASURY_ADDRESS || watch.address == CHARITY_ADDRESS {
+            // Excluded addresses (treasury, charity, etc.) receive payments, not stakes — skip them
+            if self
+                .chain_config
+                .excluded_addresses
+                .iter()
+                .any(|a| a == &watch.address)
+            {
                 continue;
             }
 
@@ -147,8 +153,7 @@ impl StakeAnalyzer {
 
                 if regular > 0 {
                     regular
-                } else {
-                    // Try vault balance (only_vaults=true)
+                } else if self.chain_config.has_vaults {
                     match self.rpc.get_vault_balance(&watch.address).await {
                         Ok(vb) if vb.balance > 0 => vb.balance,
                         _ => {
@@ -156,6 +161,8 @@ impl StakeAnalyzer {
                             continue;
                         }
                     }
+                } else {
+                    continue;
                 }
             };
 
@@ -163,6 +170,7 @@ impl StakeAnalyzer {
             let expected_secs = Self::compute_expected_interval(
                 effective_balance,
                 self.config.network_staking_supply,
+                self.chain_config.block_time_secs,
             );
             if expected_secs.is_infinite() {
                 continue;
@@ -248,6 +256,8 @@ impl StakeAnalyzer {
         rpc: &Arc<dyn RpcClient>,
         db: &DbPool,
         address: &str,
+        has_vaults: bool,
+        excluded_addresses: &[String],
     ) -> Result<()> {
         info!(address, "Starting historical stake backfill");
 
@@ -300,7 +310,7 @@ impl StakeAnalyzer {
 
             let mut recorded = 0u32;
             let mut latest_height: Option<u64> = None;
-            let evt_type = event_type_for_address(address);
+            let evt_type = event_type_for_address(address, excluded_addresses);
 
             for (&height, sats) in by_height.iter().rev() {
                 let net: i64 = sats.iter().sum();
@@ -349,99 +359,103 @@ impl StakeAnalyzer {
         }
 
         if deltas.is_empty() {
-            // No regular deltas -- try vault deltas (only_vaults=true)
-            info!(address, "No regular deltas, trying vault deltas");
-            match rpc
-                .get_vault_deltas(address, Some(start_height), Some(current_height))
-                .await
-            {
-                Ok(vault_deltas) if !vault_deltas.is_empty() => {
-                    info!(address, count = vault_deltas.len(), "Found vault deltas");
+            if has_vaults {
+                // No regular deltas -- try vault deltas (only_vaults=true)
+                info!(address, "No regular deltas, trying vault deltas");
+                match rpc
+                    .get_vault_deltas(address, Some(start_height), Some(current_height))
+                    .await
+                {
+                    Ok(vault_deltas) if !vault_deltas.is_empty() => {
+                        info!(address, count = vault_deltas.len(), "Found vault deltas");
 
-                    // Group ALL deltas (positive and negative) by block height.
-                    // When a vault UTXO stakes, the old UTXO is spent (negative delta)
-                    // and a new one is created (positive delta). The reward is the net
-                    // difference: sum_positive + sum_negative (negatives already negative).
-                    let mut by_height: std::collections::BTreeMap<u64, Vec<i64>> =
-                        std::collections::BTreeMap::new();
-                    for d in &vault_deltas {
-                        by_height.entry(d.height).or_default().push(d.satoshis);
-                    }
-
-                    // Collect staking events sorted by height descending (most recent first).
-                    // Skip blocks where the net delta equals the total positive (initial deposit).
-                    let mut stake_blocks: Vec<(u64, i64, String)> = Vec::new();
-                    for (&height, sats) in by_height.iter().rev() {
-                        let net: i64 = sats.iter().sum();
-                        let has_negative = sats.iter().any(|&s| s < 0);
-
-                        // If there are no negative deltas, this is an initial vault deposit,
-                        // not a staking reward — skip it.
-                        if !has_negative || net <= 0 {
-                            continue;
+                        // Group ALL deltas (positive and negative) by block height.
+                        // When a vault UTXO stakes, the old UTXO is spent (negative delta)
+                        // and a new one is created (positive delta). The reward is the net
+                        // difference: sum_positive + sum_negative (negatives already negative).
+                        let mut by_height: std::collections::BTreeMap<u64, Vec<i64>> =
+                            std::collections::BTreeMap::new();
+                        for d in &vault_deltas {
+                            by_height.entry(d.height).or_default().push(d.satoshis);
                         }
 
-                        // Find the txid of the positive delta in this block for the event record
-                        let txid = vault_deltas
-                            .iter()
-                            .find(|d| d.height == height && d.satoshis > 0)
-                            .map(|d| d.txid.clone())
-                            .unwrap_or_default();
+                        // Collect staking events sorted by height descending (most recent first).
+                        // Skip blocks where the net delta equals the total positive (initial deposit).
+                        let mut stake_blocks: Vec<(u64, i64, String)> = Vec::new();
+                        for (&height, sats) in by_height.iter().rev() {
+                            let net: i64 = sats.iter().sum();
+                            let has_negative = sats.iter().any(|&s| s < 0);
 
-                        stake_blocks.push((height, net, txid));
-                    }
-
-                    let mut recorded = 0u32;
-                    let mut latest_height: Option<u64> = None;
-
-                    let evt_type = event_type_for_address(address);
-                    for (height, reward, txid) in &stake_blocks {
-                        match crate::db::record_stake_event(
-                            db, address, txid, *height,
-                            "", // block hash not available from deltas
-                            *reward, evt_type,
-                        ) {
-                            Ok(true) => {
-                                recorded += 1;
-                                debug!(
-                                    address,
-                                    txid = %txid,
-                                    height,
-                                    reward = %satoshi_to_divi(*reward),
-                                    "Backfilled vault stake reward"
-                                );
+                            // If there are no negative deltas, this is an initial vault deposit,
+                            // not a staking reward — skip it.
+                            if !has_negative || net <= 0 {
+                                continue;
                             }
-                            Ok(false) => {} // duplicate
-                            Err(e) => {
-                                warn!(
-                                    txid = %txid,
-                                    error = %e,
-                                    "Failed to record backfilled vault stake"
-                                );
+
+                            // Find the txid of the positive delta in this block for the event record
+                            let txid = vault_deltas
+                                .iter()
+                                .find(|d| d.height == height && d.satoshis > 0)
+                                .map(|d| d.txid.clone())
+                                .unwrap_or_default();
+
+                            stake_blocks.push((height, net, txid));
+                        }
+
+                        let mut recorded = 0u32;
+                        let mut latest_height: Option<u64> = None;
+
+                        let evt_type = event_type_for_address(address, excluded_addresses);
+                        for (height, reward, txid) in &stake_blocks {
+                            match crate::db::record_stake_event(
+                                db, address, txid, *height,
+                                "", // block hash not available from deltas
+                                *reward, evt_type,
+                            ) {
+                                Ok(true) => {
+                                    recorded += 1;
+                                    debug!(
+                                        address,
+                                        txid = %txid,
+                                        height,
+                                        reward = %satoshi_to_divi(*reward),
+                                        "Backfilled vault stake reward"
+                                    );
+                                }
+                                Ok(false) => {} // duplicate
+                                Err(e) => {
+                                    warn!(
+                                        txid = %txid,
+                                        error = %e,
+                                        "Failed to record backfilled vault stake"
+                                    );
+                                }
+                            }
+
+                            if latest_height.is_none() || Some(*height) > latest_height {
+                                latest_height = Some(*height);
                             }
                         }
 
-                        if latest_height.is_none() || Some(*height) > latest_height {
-                            latest_height = Some(*height);
+                        // Set last_stake_at from most recent stake
+                        if let Some(height) = latest_height {
+                            crate::db::update_last_stake(db, address, height)?;
                         }
-                    }
 
-                    // Set last_stake_at from most recent stake
-                    if let Some(height) = latest_height {
-                        crate::db::update_last_stake(db, address, height)?;
+                        info!(address, recorded, "Vault backfill complete");
+                        return Ok(());
                     }
-
-                    info!(address, recorded, "Vault backfill complete");
-                    return Ok(());
+                    Ok(_) => {
+                        info!(address, "No vault deltas found either, skipping backfill");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        info!(address, error = %e, "Vault deltas not available, skipping backfill");
+                        return Ok(());
+                    }
                 }
-                Ok(_) => {
-                    info!(address, "No vault deltas found either, skipping backfill");
-                    return Ok(());
-                }
-                Err(e) => {
-                    info!(address, error = %e, "Vault deltas not available, skipping backfill");
-                    return Ok(());
-                }
+            } else {
+                return Ok(());
             }
         }
 
@@ -468,9 +482,9 @@ impl StakeAnalyzer {
                 }
             };
 
-            // For Treasury/Charity addresses, all positive deltas are payment events.
+            // For excluded addresses (treasury, charity, etc.), all positive deltas are payment events.
             // For staking addresses, check if it's a coinbase/coinstake transaction.
-            let is_payment_address = address == TREASURY_ADDRESS || address == CHARITY_ADDRESS;
+            let is_payment_address = excluded_addresses.iter().any(|a| a == address);
             if !is_payment_address {
                 let is_coinbase_or_coinstake = tx
                     .vin
@@ -491,7 +505,7 @@ impl StakeAnalyzer {
             };
 
             // Record up to 100 events
-            let evt_type = event_type_for_address(address);
+            let evt_type = event_type_for_address(address, excluded_addresses);
             if recorded < 100 {
                 match db::record_stake_event(
                     db,
@@ -678,17 +692,19 @@ mod tests {
 
     #[test]
     fn test_zero_balance_returns_infinity() {
-        assert!(StakeAnalyzer::compute_expected_interval(0, 3_000_000).is_infinite());
+        assert!(StakeAnalyzer::compute_expected_interval(0, 3_000_000, 60).is_infinite());
     }
 
     #[test]
     fn test_negative_balance_returns_infinity() {
-        assert!(StakeAnalyzer::compute_expected_interval(-100_000_000, 3_000_000).is_infinite());
+        assert!(
+            StakeAnalyzer::compute_expected_interval(-100_000_000, 3_000_000, 60).is_infinite()
+        );
     }
 
     #[test]
     fn test_zero_supply_returns_infinity() {
-        assert!(StakeAnalyzer::compute_expected_interval(100_000_000, 0).is_infinite());
+        assert!(StakeAnalyzer::compute_expected_interval(100_000_000, 0, 60).is_infinite());
     }
 
     #[test]
@@ -699,7 +715,7 @@ mod tests {
         // expected_secs = 300 * 60 = 18,000 (5 hours)
         let balance = 10_000 * 100_000_000; // 10,000 DIVI in satoshis
         let supply = 3_000_000;
-        let result = StakeAnalyzer::compute_expected_interval(balance, supply);
+        let result = StakeAnalyzer::compute_expected_interval(balance, supply, 60);
         assert!((result - 18_000.0).abs() < 1.0);
     }
 
@@ -708,7 +724,7 @@ mod tests {
         // Very large balance relative to supply -> clamped to 1 hour minimum
         let balance = 100_000_000 * 100_000_000_i64; // 100M DIVI
         let supply = 3_000_000;
-        let result = StakeAnalyzer::compute_expected_interval(balance, supply);
+        let result = StakeAnalyzer::compute_expected_interval(balance, supply, 60);
         assert_eq!(result, 3600.0);
     }
 
@@ -717,7 +733,7 @@ mod tests {
         // Tiny balance -> clamped to 365 days maximum
         let balance = 1; // 0.00000001 DIVI
         let supply = 3_000_000_000;
-        let result = StakeAnalyzer::compute_expected_interval(balance, supply);
+        let result = StakeAnalyzer::compute_expected_interval(balance, supply, 60);
         assert_eq!(result, 365.0 * 86400.0);
     }
 
@@ -727,8 +743,8 @@ mod tests {
         // don't hit the 1-hour floor clamp).
         let supply = 3_000_000;
         let base = 1_000 * 100_000_000_i64; // 1,000 DIVI -> ~180,000s
-        let interval1 = StakeAnalyzer::compute_expected_interval(base, supply);
-        let interval2 = StakeAnalyzer::compute_expected_interval(base * 2, supply);
+        let interval1 = StakeAnalyzer::compute_expected_interval(base, supply, 60);
+        let interval2 = StakeAnalyzer::compute_expected_interval(base * 2, supply, 60);
         assert!((interval1 / interval2 - 2.0).abs() < 0.01);
     }
 }

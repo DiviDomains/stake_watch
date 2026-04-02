@@ -17,16 +17,29 @@ pub struct BlockProcessor {
     db: DbPool,
     notifier: Arc<Notifier>,
     alert_analyzer: AlertAnalyzer,
+    has_lottery: bool,
+    _has_vaults: bool,
+    _excluded_addresses: Vec<String>,
 }
 
 impl BlockProcessor {
-    pub fn new(rpc: Arc<dyn RpcClient>, db: DbPool, notifier: Arc<Notifier>) -> Self {
+    pub fn new(
+        rpc: Arc<dyn RpcClient>,
+        db: DbPool,
+        notifier: Arc<Notifier>,
+        has_lottery: bool,
+        has_vaults: bool,
+        excluded_addresses: Vec<String>,
+    ) -> Self {
         let alert_analyzer = AlertAnalyzer::new(db.clone(), Arc::clone(&notifier));
         Self {
             rpc,
             db,
             notifier,
             alert_analyzer,
+            has_lottery,
+            _has_vaults: has_vaults,
+            _excluded_addresses: excluded_addresses,
         }
     }
 
@@ -172,8 +185,8 @@ impl BlockProcessor {
             }
         }
 
-        // 6. Check lottery winners
-        if !watched_addresses.is_empty() {
+        // 6. Check lottery winners (only if the chain supports it)
+        if self.has_lottery && !watched_addresses.is_empty() {
             self.check_lottery_winners(&block, &watched_addresses).await;
         }
 
@@ -493,6 +506,7 @@ impl BlockProcessor {
                         block.height,
                         &block.hash,
                         &winners_data,
+                        "Lottery",
                     );
 
                     for chat_id in &subscriber_ids {

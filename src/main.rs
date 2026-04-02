@@ -15,7 +15,7 @@ use stake_watch::{
 #[derive(Parser, Debug)]
 #[command(
     name = "stake_watch",
-    about = "Telegram bot for monitoring Divi blockchain staking",
+    about = "Telegram bot for monitoring blockchain staking",
     version
 )]
 struct Cli {
@@ -67,8 +67,11 @@ async fn main() -> Result<()> {
     let db_pool = db::init_db(&config.general.db_path)?;
 
     // 7. Create RPC client
-    let rpc_client: Arc<dyn rpc::RpcClient> =
-        Arc::from(rpc::create_rpc_client(&config.backend, &secrets));
+    let rpc_client: Arc<dyn rpc::RpcClient> = Arc::from(rpc::create_rpc_client(
+        &config.backend,
+        &secrets,
+        &config.chain,
+    ));
 
     // 8. Log startup info
     match rpc_client.get_block_count().await {
@@ -116,6 +119,7 @@ async fn main() -> Result<()> {
         bot.clone(),
         db_pool.clone(),
         config.backend.explorer_url.clone(),
+        config.chain.ticker.clone(),
     ));
 
     // Create broadcast channel for SSE block feed
@@ -147,8 +151,14 @@ async fn main() -> Result<()> {
         }
     });
 
-    let processor =
-        block_processor::BlockProcessor::new(rpc_client.clone(), db_pool.clone(), notifier.clone());
+    let processor = block_processor::BlockProcessor::new(
+        rpc_client.clone(),
+        db_pool.clone(),
+        notifier.clone(),
+        config.chain.has_lottery,
+        config.chain.has_vaults,
+        config.chain.excluded_addresses.clone(),
+    );
     let processor_handle = tokio::spawn(async move {
         processor.run(fwd_rx).await;
     });
@@ -171,6 +181,7 @@ async fn main() -> Result<()> {
         db_pool.clone(),
         notifier.clone(),
         config.general.clone(),
+        config.chain.clone(),
     );
     let alert_handle = tokio::spawn(async move {
         stake_analyzer.run_alert_loop().await;
