@@ -198,7 +198,7 @@ impl BlockProcessor {
     }
 
     /// Check transaction outputs against watched addresses and record/notify
-    /// any matching stake events.
+    /// any matching stake events. Deduplicates per address per transaction.
     async fn check_stake_outputs(
         &self,
         block: &crate::rpc::Block,
@@ -206,28 +206,29 @@ impl BlockProcessor {
         watched_addresses: &HashSet<String>,
         event_type: &str,
     ) {
+        // Collect unique watched addresses that appear in any output
+        let mut seen: HashSet<String> = HashSet::new();
         for vout in &tx.vout {
-            let matched = self.find_matching_addresses(vout, watched_addresses);
-            for address in matched {
-                info!(
-                    address = %address,
-                    event_type = event_type,
-                    txid = %tx.txid,
-                    value = vout.value,
-                    height = block.height,
-                    "Stake reward detected for watched address"
-                );
+            for addr in self.find_matching_addresses(vout, watched_addresses) {
+                seen.insert(addr);
+            }
+        }
 
-                if let Err(e) = self
-                    .record_and_notify(&address, block, tx, vout, event_type)
-                    .await
-                {
-                    error!(
-                        address = %address,
-                        error = %e,
-                        "Failed to record/notify stake event"
-                    );
-                }
+        for address in &seen {
+            info!(
+                address = %address,
+                event_type = event_type,
+                txid = %tx.txid,
+                height = block.height,
+                "Stake reward detected for watched address"
+            );
+
+            if let Err(e) = self.record_and_notify(address, block, tx, event_type).await {
+                error!(
+                    address = %address,
+                    error = %e,
+                    "Failed to record/notify stake event"
+                );
             }
         }
     }
@@ -250,52 +251,65 @@ impl BlockProcessor {
 
     /// Record a stake event in the database and send a notification to all
     /// users watching the address.
+    ///
+    /// Computes reward as `total_outputs - total_inputs` for the whole
+    /// transaction, which works correctly for both regular coinstakes
+    /// (split across multiple outputs) and vault stakes.
     async fn record_and_notify(
         &self,
         address: &str,
         block: &crate::rpc::Block,
         tx: &Transaction,
-        vout: &Vout,
         event_type: &str,
     ) -> anyhow::Result<()> {
-        // For vault outputs compute the reward (net gain) rather than recording
-        // the full recycled UTXO value.
-        let amount_satoshis = if vout.script_pub_key.script_type.as_deref() == Some("vault") {
-            let total_out: f64 = tx.vout.iter().map(|v| v.value).sum();
-            let mut total_in: f64 = tx.vin.iter().filter_map(|v| v.value).sum();
+        // Compute reward as total_out - total_in for the entire transaction.
+        // This handles both regular coinstakes (which split across multiple
+        // outputs to the same address) and vault stakes correctly.
+        let total_out_sats: i64 = tx
+            .vout
+            .iter()
+            .map(|v| (v.value * 100_000_000.0).round() as i64)
+            .sum();
 
-            // If vin values not available, fetch the previous tx to get the input value
-            if total_in == 0.0 {
-                for vin in &tx.vin {
-                    if let Some(prev_txid) = &vin.txid {
-                        if let Ok(prev_tx) = self.rpc.get_raw_transaction(prev_txid).await {
-                            let prev_vout_idx = vin.vout.unwrap_or(0) as usize;
-                            if let Some(prev_vout) = prev_tx.vout.get(prev_vout_idx) {
-                                total_in += prev_vout.value;
-                            }
+        let mut total_in_sats: i64 = tx
+            .vin
+            .iter()
+            .filter_map(|v| v.value.map(|val| (val * 100_000_000.0).round() as i64))
+            .sum();
+
+        // If vin values not available, fetch the previous tx(s) to get input values
+        if total_in_sats == 0 {
+            for vin in &tx.vin {
+                if let Some(prev_txid) = &vin.txid {
+                    if let Ok(prev_tx) = self.rpc.get_raw_transaction(prev_txid).await {
+                        let prev_vout_idx = vin.vout.unwrap_or(0) as usize;
+                        if let Some(prev_vout) = prev_tx.vout.get(prev_vout_idx) {
+                            total_in_sats += (prev_vout.value * 100_000_000.0).round() as i64;
                         }
                     }
                 }
             }
+        }
 
-            let reward_sats = (total_out * 100_000_000.0).round() as i64
-                - (total_in * 100_000_000.0).round() as i64;
-            // Sanity-check: reward should be positive and reasonable (< 10000 DIVI).
-            if reward_sats > 0 && reward_sats < 1_000_000_000_000 {
-                reward_sats
-            } else {
-                // Something went wrong — log and fall back to standard reward
-                tracing::warn!(
-                    txid = %tx.txid,
-                    total_out,
-                    total_in,
-                    reward_sats,
-                    "Vault reward calculation looks wrong, using vout value"
-                );
-                (vout.value * 100_000_000.0).round() as i64
-            }
+        let reward_sats = total_out_sats - total_in_sats;
+
+        // Sanity-check: reward should be positive and reasonable (< 10,000 DIVI)
+        let amount_satoshis = if reward_sats > 0 && reward_sats < 1_000_000_000_000 {
+            reward_sats
         } else {
-            (vout.value * 100_000_000.0).round() as i64
+            tracing::warn!(
+                txid = %tx.txid,
+                total_out_sats,
+                total_in_sats,
+                reward_sats,
+                "Reward calculation looks wrong, falling back to first non-zero vout"
+            );
+            // Fallback: use the first non-zero vout value
+            tx.vout
+                .iter()
+                .find(|v| v.value > 0.0)
+                .map(|v| (v.value * 100_000_000.0).round() as i64)
+                .unwrap_or(0)
         };
 
         // Record the stake event in the database.
