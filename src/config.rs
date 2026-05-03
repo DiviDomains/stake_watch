@@ -49,9 +49,25 @@ pub struct BackendConfig {
     pub backend_type: BackendType,
     pub rpc_url: String,
     pub explorer_url: String,
+    #[serde(default = "default_address_path")]
+    pub explorer_address_path: String,
+    #[serde(default = "default_tx_path")]
+    pub explorer_tx_path: String,
+    #[serde(default = "default_block_path")]
+    pub explorer_block_path: String,
     pub socketio: Option<SocketIoConfig>,
     pub polling: Option<PollingConfig>,
     pub rpc_auth: Option<RpcAuthConfig>,
+}
+
+fn default_address_path() -> String {
+    "/address/".to_string()
+}
+fn default_tx_path() -> String {
+    "/tx/".to_string()
+}
+fn default_block_path() -> String {
+    "/block/".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -145,6 +161,19 @@ pub struct ChainConfig {
     /// Block time in seconds (used for staking frequency calculation)
     #[serde(default = "default_block_time")]
     pub block_time_secs: u64,
+    /// Default watched addresses added for new users (address + label).
+    /// These are added with include_in_portfolio=false and sort_order=1000.
+    #[serde(default = "default_default_watches")]
+    pub default_watches: Vec<DefaultWatch>,
+    /// Suggested addresses shown on the Add Watch screen for easy one-tap adding.
+    #[serde(default)]
+    pub suggested_watches: Vec<DefaultWatch>,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct DefaultWatch {
+    pub address: String,
+    pub label: String,
 }
 
 impl Default for ChainConfig {
@@ -158,6 +187,8 @@ impl Default for ChainConfig {
             has_vaults: true,
             has_masternodes: false,
             block_time_secs: default_block_time(),
+            default_watches: default_default_watches(),
+            suggested_watches: Vec::new(),
         }
     }
 }
@@ -182,6 +213,18 @@ fn default_true() -> bool {
 }
 fn default_block_time() -> u64 {
     60
+}
+fn default_default_watches() -> Vec<DefaultWatch> {
+    vec![
+        DefaultWatch {
+            address: "DPhJsztbZafDc1YeyrRqSjmKjkmLJpQpUn".to_string(),
+            label: "Divi Treasury".to_string(),
+        },
+        DefaultWatch {
+            address: "DPujt2XAdHyRcZNB5ySZBBVKjzY2uXZGYq".to_string(),
+            label: "Divi Charity".to_string(),
+        },
+    ]
 }
 
 // ---------------------------------------------------------------------------

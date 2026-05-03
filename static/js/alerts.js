@@ -6,11 +6,12 @@
 // ============================================================
 
 import { api } from './api.js';
+import { chainConfig } from './chain.js';
 import { escapeHtml } from './helpers.js';
 
 // Alert type metadata for display
 const ALERT_TYPES = {
-    large_tx:          { label: 'Large Transaction',    icon: 'arrow-up',    description: 'Alert when a transaction exceeds the threshold (in DIVI).' },
+    large_tx:          { label: 'Large Transaction',    icon: 'arrow-up',    description: `Alert when a transaction exceeds the threshold (in ${chainConfig.ticker}).` },
     large_block:       { label: 'Large Block',          icon: 'package',     description: 'Alert when a block exceeds the threshold size (in bytes).' },
     many_inputs:       { label: 'Many Inputs',          icon: 'git-merge',   description: 'Alert when a transaction has more inputs than the threshold.' },
     many_outputs:      { label: 'Many Outputs',         icon: 'git-branch',  description: 'Alert when a transaction has more outputs than the threshold.' },
@@ -162,7 +163,7 @@ window.updateAlertDescription = function() {
         if (needsThreshold.includes(type)) {
             thresholdGroup.style.display = 'block';
             if (type === 'large_tx') {
-                thresholdHelp.textContent = 'Minimum transaction value in DIVI';
+                thresholdHelp.textContent = `Minimum transaction value in ${chainConfig.ticker}`;
             } else if (type === 'large_block') {
                 thresholdHelp.textContent = 'Minimum block size in bytes';
             } else {

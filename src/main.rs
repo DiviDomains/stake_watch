@@ -120,6 +120,9 @@ async fn main() -> Result<()> {
         db_pool.clone(),
         config.backend.explorer_url.clone(),
         config.chain.ticker.clone(),
+        config.backend.explorer_address_path.clone(),
+        config.backend.explorer_tx_path.clone(),
+        config.backend.explorer_block_path.clone(),
     ));
 
     // Create broadcast channel for SSE block feed
@@ -210,6 +213,7 @@ async fn main() -> Result<()> {
         config: config.clone(),
         secrets: secrets.clone(),
         explorer_url: config.backend.explorer_url.clone(),
+        explorer_tx_path: config.backend.explorer_tx_path.clone(),
         block_tx: Some(sse_block_tx),
     });
     let webapp_router = webapp::router(webapp_state);

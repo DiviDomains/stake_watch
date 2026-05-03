@@ -40,7 +40,8 @@ pub fn router(state: Arc<WebAppState>) -> Router {
         // Admin endpoints
         .route("/admin/users", get(get_admin_users))
         // Public endpoints
-        .route("/price/divi", get(get_divi_price))
+        .route("/price", get(get_price))
+        .route("/chain", get(get_chain_config))
         // Public explorer endpoints
         .route("/blocks", get(get_blocks))
         .route("/blocks/{hash}", get(get_block))
@@ -57,12 +58,6 @@ pub fn router(state: Arc<WebAppState>) -> Router {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Default watched addresses added for every new user.
-const DEFAULT_WATCHES: &[(&str, &str)] = &[
-    ("DPhJsztbZafDc1YeyrRqSjmKjkmLJpQpUn", "Divi Treasury"),
-    ("DPujt2XAdHyRcZNB5ySZBBVKjzY2uXZGYq", "Divi Charity"),
-];
-
 /// Validate initData and ensure the user is registered with default watches.
 fn get_telegram_user(headers: &HeaderMap, state: &WebAppState) -> Option<auth::TelegramUser> {
     let init_data = headers.get("X-Telegram-Init-Data")?.to_str().ok()?;
@@ -75,14 +70,14 @@ fn get_telegram_user(headers: &HeaderMap, state: &WebAppState) -> Option<auth::T
     // defaults that the user deliberately removed)
     if let Ok(count) = db::get_watch_count_for_user(&state.db, user.id) {
         if count == 0 {
-            for (address, label) in DEFAULT_WATCHES {
+            for dw in &state.config.chain.default_watches {
                 let _ = db::add_watch_full(
                     &state.db,
                     user.id,
-                    address,
-                    Some(label),
+                    &dw.address,
+                    Some(&dw.label),
                     1000,
-                    false, // Treasury/Charity excluded from portfolio by default
+                    false,
                 );
             }
         }
@@ -155,16 +150,11 @@ struct AddWatchRequest {
     label: Option<String>,
 }
 
-/// Known non-staking addresses (treasury, charity) that receive block rewards
-/// but don't participate in staking.
-const TREASURY_ADDRESS: &str = "DPhJsztbZafDc1YeyrRqSjmKjkmLJpQpUn";
-const CHARITY_ADDRESS: &str = "DPujt2XAdHyRcZNB5ySZBBVKjzY2uXZGYq";
-
-fn address_type(address: &str) -> &'static str {
-    match address {
-        TREASURY_ADDRESS => "treasury",
-        CHARITY_ADDRESS => "charity",
-        _ => "standard",
+fn address_type(address: &str, excluded_addresses: &[String]) -> &'static str {
+    if excluded_addresses.iter().any(|a| a == address) {
+        "excluded"
+    } else {
+        "standard"
     }
 }
 
@@ -172,7 +162,7 @@ fn address_type(address: &str) -> &'static str {
 struct AnalysisResponse {
     address: String,
     label: Option<String>,
-    address_type: String, // "standard", "treasury", "charity"
+    address_type: String, // "standard", "excluded"
     balance_divi: String,
     balance_satoshis: i64,
     is_vault: bool,
@@ -450,10 +440,14 @@ async fn add_watch(
     }
 
     // Validate address format
-    if !address.starts_with('D') && !address.starts_with('y') {
-        return Err(bad_request(
-            "Invalid address: must start with 'D' (mainnet) or 'y' (testnet)",
-        ));
+    let valid_prefix = state
+        .config
+        .chain
+        .address_prefixes
+        .iter()
+        .any(|p| address.starts_with(p.as_str()));
+    if !valid_prefix {
+        return Err(bad_request("Invalid address: unrecognized address prefix"));
     }
 
     // RPC validation
@@ -585,10 +579,10 @@ async fn reorder_watches(
 }
 
 // ---------------------------------------------------------------------------
-// GET /api/price/divi
+// GET /api/price
 // ---------------------------------------------------------------------------
 
-async fn get_divi_price() -> Result<Json<PriceResponse>, (StatusCode, Json<ApiError>)> {
+async fn get_price() -> Result<Json<PriceResponse>, (StatusCode, Json<ApiError>)> {
     // Simple cache using a static Mutex
     use std::sync::Mutex;
     use std::time::Instant;
@@ -646,6 +640,35 @@ async fn get_divi_price() -> Result<Json<PriceResponse>, (StatusCode, Json<ApiEr
         usd: price,
         last_updated: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
     }))
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/chain
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct ChainConfigResponse {
+    name: String,
+    ticker: String,
+    has_lottery: bool,
+    has_vaults: bool,
+    has_masternodes: bool,
+    explorer_url: String,
+    address_prefixes: Vec<String>,
+    suggested_watches: Vec<crate::config::DefaultWatch>,
+}
+
+async fn get_chain_config(State(state): State<Arc<WebAppState>>) -> Json<ChainConfigResponse> {
+    Json(ChainConfigResponse {
+        name: state.config.chain.name.clone(),
+        ticker: state.config.chain.ticker.clone(),
+        has_lottery: state.config.chain.has_lottery,
+        has_vaults: state.config.chain.has_vaults,
+        has_masternodes: state.config.chain.has_masternodes,
+        explorer_url: state.explorer_url.clone(),
+        address_prefixes: state.config.chain.address_prefixes.clone(),
+        suggested_watches: state.config.chain.suggested_watches.clone(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -775,7 +798,7 @@ async fn get_analysis(
     Ok(Json(AnalysisResponse {
         address: address.clone(),
         label,
-        address_type: address_type(&address).to_string(),
+        address_type: address_type(&address, &state.config.chain.excluded_addresses).to_string(),
         balance_divi: utils::satoshi_to_divi(balance.balance),
         balance_satoshis: balance.balance,
         is_vault,
@@ -830,7 +853,7 @@ async fn get_stakes(
             amount_divi: utils::satoshi_to_divi(s.amount_satoshis),
             event_type: s.event_type,
             detected_at: s.detected_at.format("%Y-%m-%d %H:%M:%S").to_string(),
-            explorer_url: format!("{}/tx/{}", state.explorer_url, s.txid),
+            explorer_url: format!("{}{}{}", state.explorer_url, state.explorer_tx_path, s.txid),
         })
         .collect();
 
@@ -1260,7 +1283,13 @@ async fn search(
         }
     }
 
-    if q.starts_with('D') || q.starts_with('y') {
+    if state
+        .config
+        .chain
+        .address_prefixes
+        .iter()
+        .any(|p| q.starts_with(p.as_str()))
+    {
         // Address
         match state.rpc.validate_address(q).await {
             Ok(v) if v.isvalid => {

@@ -5,7 +5,7 @@
 // ============================================================
 
 /**
- * Format a satoshi amount as a full DIVI string with 8 decimal places.
+ * Format a satoshi amount as a full coin string with 8 decimal places.
  * Example: 701777600000000 -> "7,017,776.00000000"
  */
 export function formatDivi(satoshis) {
@@ -19,7 +19,7 @@ export function formatDivi(satoshis) {
 }
 
 /**
- * Format a satoshi amount as a short DIVI string with 2 decimal places.
+ * Format a satoshi amount as a short coin string with 2 decimal places.
  * Example: 701777600000000 -> "7,017,776.00"
  */
 export function formatDiviShort(satoshis) {
@@ -40,7 +40,7 @@ export function formatDiviShort(satoshis) {
 }
 
 /**
- * Format a DIVI float value (not satoshis) with commas.
+ * Format a coin float value (not satoshis) with commas.
  * Example: 7017776.0 -> "7,017,776.00000000"
  */
 export function formatDiviFloat(value) {

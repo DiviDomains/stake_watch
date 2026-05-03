@@ -96,5 +96,7 @@ export const api = {
 
     getNetwork: () => fetchApi('/network'),
 
-    getDiviPrice: () => fetchApi('/price/divi'),
+    getPrice: () => fetchApi('/price'),
+
+    getChainConfig: () => fetchApi('/chain'),
 };

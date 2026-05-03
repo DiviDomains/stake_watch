@@ -13,6 +13,8 @@ import { renderAlerts } from './alerts.js';
 import { renderAddressDetail } from './address.js';
 import { renderUsers } from './users.js';
 
+import { loadChainConfig } from './chain.js';
+
 // ----- Telegram WebApp Initialization -----
 
 const tg = window.Telegram?.WebApp;
@@ -214,4 +216,7 @@ window.haptic = function haptic(type = 'light') {
 
 // ----- Initial Load -----
 
-handleHash();
+(async function init() {
+    await loadChainConfig();
+    handleHash();
+})();

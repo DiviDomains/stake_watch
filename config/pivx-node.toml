@@ -12,6 +12,29 @@ name = "PIVX"
 ticker = "PIV"
 address_prefixes = ["D", "S"]
 excluded_addresses = []
+
+default_watches = []
+
+[[chain.suggested_watches]]
+address = "DPT2VhFFst1oXZExahEy4ATkZAgMg7uD7q"
+label = "Core Dev (Liquid369)"
+
+[[chain.suggested_watches]]
+address = "DShxa9sykpVUYBe2VKZfq9dzE8f2yBbtmg"
+label = "Core Dev (Duddino)"
+
+[[chain.suggested_watches]]
+address = "DBh9o9uRGohcDKpeiEyRiwtmTaTL3xDdev"
+label = "DevOps (Fuzzbawls)"
+
+[[chain.suggested_watches]]
+address = "DPghECKPaEbyBb53CQ7kewSV4YRuooVeBi"
+label = "PIVX Labs (JSKitty)"
+
+[[chain.suggested_watches]]
+address = "SdgQDpS8jDRJDX8yK8m9KnTMarsE84zdsy"
+label = "Cold Staking Pool (PIVX Labs)"
+
 has_lottery = false
 has_vaults = false
 has_masternodes = true
@@ -27,7 +50,10 @@ max_watches_per_user = 20
 [backend]
 type = "polling"
 rpc_url = "http://127.0.0.1:51473"
-explorer_url = "https://pivx.cri.xyz"
+explorer_url = "https://chainz.cryptoid.info/pivx"
+explorer_address_path = "/address.dws?"
+explorer_tx_path = "/tx.dws?"
+explorer_block_path = "/block.dws?"
 
 [backend.polling]
 interval_secs = 60

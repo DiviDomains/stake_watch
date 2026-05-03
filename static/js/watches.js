@@ -7,6 +7,7 @@
 // ============================================================
 
 import { api } from './api.js';
+import { chainConfig } from './chain.js';
 import { escapeHtml } from './helpers.js';
 
 export async function renderWatches(container) {
@@ -31,7 +32,7 @@ export async function renderWatches(container) {
                         <circle cx="12" cy="12" r="3"/>
                     </svg>
                     <div class="empty-state-title">No watches yet</div>
-                    <p>Add a Divi address below to start monitoring its staking activity.</p>
+                    <p>Add a ${chainConfig.name} address below to start monitoring its staking activity.</p>
                 </div>`;
         } else {
             html += `<div id="watch-list">`;
@@ -105,10 +106,30 @@ export async function renderWatches(container) {
         // Add watch form
         html += `
             <div class="divider"></div>
-            <div class="section-title card-stagger">Add New Watch</div>
+            <div class="section-title card-stagger">Add New Watch</div>`;
+
+        // Suggested watches (from chain config)
+        if (chainConfig.suggested_watches && chainConfig.suggested_watches.length > 0) {
+            const watchedAddrs = new Set(watches.map(w => w.address));
+            const available = chainConfig.suggested_watches.filter(s => !watchedAddrs.has(s.address));
+            if (available.length > 0) {
+                html += `
+                    <div class="card card-stagger" style="margin-bottom: 12px;">
+                        <div class="form-label" style="margin-bottom: 8px;">Quick Add</div>
+                        <div style="display: flex; flex-wrap: wrap; gap: 8px;">`;
+                for (const s of available) {
+                    html += `<button class="btn btn-ghost" style="font-size: 12px; padding: 6px 12px;"
+                                     onclick="addSuggestedWatch('${escapeHtml(s.address)}', '${escapeHtml(s.label)}')"
+                                     title="${escapeHtml(s.address)}">${escapeHtml(s.label)}</button>`;
+                }
+                html += `</div></div>`;
+            }
+        }
+
+        html += `
             <div class="card card-stagger">
                 <div class="form-group">
-                    <label class="form-label" for="watch-address">Divi Address</label>
+                    <label class="form-label" for="watch-address">${chainConfig.name} Address</label>
                     <input type="text"
                            id="watch-address"
                            class="form-input"
@@ -117,7 +138,7 @@ export async function renderWatches(container) {
                            autocorrect="off"
                            autocapitalize="off"
                            spellcheck="false" />
-                    <div class="form-help">Enter a Divi mainnet (D...) or testnet (y...) address</div>
+                    <div class="form-help">Enter a ${chainConfig.name} address</div>
                 </div>
                 <div class="form-group">
                     <label class="form-label" for="watch-label">Label (optional)</label>
@@ -164,8 +185,10 @@ window.submitAddWatch = async function() {
         return;
     }
 
-    // Basic validation
-    if (!/^[DdYy][a-zA-Z0-9]{24,44}$/.test(address)) {
+    // Basic validation using chain-configured prefixes
+    const prefixes = (chainConfig.address_prefixes || ['D', 'y']).join('');
+    const prefixRegex = new RegExp(`^[${prefixes}][a-zA-Z0-9]{24,44}$`);
+    if (!prefixRegex.test(address)) {
         window.haptic('warning');
         window.showToast('Invalid address format', 'error');
         addressInput?.focus();
@@ -183,6 +206,22 @@ window.submitAddWatch = async function() {
             window.showToast('You are already watching this address', 'error');
         } else if (e.message.includes('limit') || e.message.includes('max')) {
             window.showToast('Watch limit reached', 'error');
+        } else {
+            window.showToast('Failed to add: ' + e.message, 'error');
+        }
+    }
+};
+
+window.addSuggestedWatch = async function(address, label) {
+    try {
+        await api.addWatch(address, label);
+        window.haptic('success');
+        window.showToast(`Added ${label}`);
+        navigate('watches');
+    } catch (e) {
+        window.haptic('error');
+        if (e.message.includes('409') || e.message.includes('already')) {
+            window.showToast('Already watching this address', 'error');
         } else {
             window.showToast('Failed to add: ' + e.message, 'error');
         }

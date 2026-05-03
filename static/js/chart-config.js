@@ -5,6 +5,8 @@
 // and cumulative total as a line.
 // ============================================================
 
+import { chainConfig } from './chain.js';
+
 /**
  * Create a stake reward history chart.
  * @param {HTMLCanvasElement} canvas
@@ -74,7 +76,7 @@ export function createStakeChart(canvas, stakes) {
             labels,
             datasets: [
                 {
-                    label: 'Daily Rewards (DIVI)',
+                    label: `Daily Rewards (${chainConfig.ticker})`,
                     data: dailyRewards,
                     type: 'bar',
                     backgroundColor: `rgba(${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b}, 0.5)`,
@@ -85,7 +87,7 @@ export function createStakeChart(canvas, stakes) {
                     order: 2,
                 },
                 {
-                    label: 'Cumulative (DIVI)',
+                    label: `Cumulative (${chainConfig.ticker})`,
                     data: cumulative,
                     type: 'line',
                     borderColor: `rgba(${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b}, 0.6)`,
@@ -135,7 +137,7 @@ export function createStakeChart(canvas, stakes) {
                             return ctx.dataset.label + ': ' + val.toLocaleString('en-US', {
                                 minimumFractionDigits: 2,
                                 maximumFractionDigits: 2,
-                            }) + ' DIVI';
+                            }) + ' ' + chainConfig.ticker;
                         },
                     },
                 },

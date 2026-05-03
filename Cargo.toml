@@ -34,3 +34,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 [[bin]]
 name = "stake_watch"
 path = "src/main.rs"
+
+[[bin]]
+name = "backfill_all"
+path = "src/bin/backfill_all.rs"

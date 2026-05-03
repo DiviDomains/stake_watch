@@ -6,6 +6,7 @@
 // ============================================================
 
 import { api } from './api.js';
+import { chainConfig } from './chain.js';
 import { startBlockFeed } from './blockfeed.js';
 import {
     formatDivi,
@@ -231,7 +232,7 @@ export async function renderBlockDetail(container, hashOrHeight) {
                 const rewardStr = tx.reward_divi ? `<span class="text-success text-xs" style="margin-left: 8px;">+${formatDiviFloat(parseFloat(tx.reward_divi))} reward</span>` : '';
                 html += `<div class="flex-between mb-sm">
                     <span class="badge ${i <= 1 ? 'badge-neutral' : ''}">${label}${rewardStr}</span>
-                    <span class="text-hint text-xs">${formatDiviFloat(parseFloat(tx.total_output_divi || '0'))} DIVI</span>
+                    <span class="text-hint text-xs">${formatDiviFloat(parseFloat(tx.total_output_divi || '0'))} ${chainConfig.ticker}</span>
                 </div>`;
                 html += `<div class="tx-hash" style="cursor:pointer" onclick="navigate('tx', { txid: '${escapeHtml(txid)}' })">${escapeHtml(txid)}</div>`;
 

@@ -19,16 +19,45 @@ pub struct Notifier {
     db: DbPool,
     pub explorer_url: String,
     pub ticker: String,
+    pub explorer_address_path: String,
+    pub explorer_tx_path: String,
+    pub explorer_block_path: String,
 }
 
 impl Notifier {
-    pub fn new(bot: Bot, db: DbPool, explorer_url: String, ticker: String) -> Self {
+    pub fn new(
+        bot: Bot,
+        db: DbPool,
+        explorer_url: String,
+        ticker: String,
+        explorer_address_path: String,
+        explorer_tx_path: String,
+        explorer_block_path: String,
+    ) -> Self {
         Self {
             bot,
             db,
             explorer_url,
             ticker,
+            explorer_address_path,
+            explorer_tx_path,
+            explorer_block_path,
         }
+    }
+
+    pub fn address_url(&self, address: &str) -> String {
+        format!(
+            "{}{}{}",
+            self.explorer_url, self.explorer_address_path, address
+        )
+    }
+
+    pub fn tx_url(&self, txid: &str) -> String {
+        format!("{}{}{}", self.explorer_url, self.explorer_tx_path, txid)
+    }
+
+    pub fn block_url(&self, hash: &str) -> String {
+        format!("{}{}{}", self.explorer_url, self.explorer_block_path, hash)
     }
 
     // -----------------------------------------------------------------------
@@ -50,11 +79,12 @@ impl Notifier {
         };
         format!(
             "<b>Staking Reward Received</b>\n\n\
-             Address: <a href=\"{base}/address/{address}\">{short_addr}</a>{label_line}\n\
+             Address: <a href=\"{addr_url}\">{short_addr}</a>{label_line}\n\
              Amount: <b>{amount} {ticker}</b>\n\
-             Block: <a href=\"{base}/tx/{txid}\">{block_height}</a>\n\n\
-             <a href=\"{base}/tx/{txid}\">View transaction</a>",
-            base = self.explorer_url,
+             Block: <a href=\"{tx_url}\">{block_height}</a>\n\n\
+             <a href=\"{tx_url}\">View transaction</a>",
+            addr_url = self.address_url(address),
+            tx_url = self.tx_url(txid),
             short_addr = truncate_address(address),
             amount = satoshi_to_divi(amount_satoshis),
             ticker = self.ticker,
@@ -77,11 +107,12 @@ impl Notifier {
         format!(
             "<b>Lottery Win!</b>\n\n\
              Congratulations! Your address won the lottery!\n\n\
-             Address: <a href=\"{base}/address/{address}\">{short_addr}</a>{label_line}\n\
+             Address: <a href=\"{addr_url}\">{short_addr}</a>{label_line}\n\
              Amount: <b>{amount} {ticker}</b>\n\
-             Block: <a href=\"{base}/tx/{txid}\">{block_height}</a>\n\n\
-             <a href=\"{base}/tx/{txid}\">View transaction</a>",
-            base = self.explorer_url,
+             Block: <a href=\"{tx_url}\">{block_height}</a>\n\n\
+             <a href=\"{tx_url}\">View transaction</a>",
+            addr_url = self.address_url(address),
+            tx_url = self.tx_url(txid),
             short_addr = truncate_address(address),
             amount = satoshi_to_divi(amount_satoshis),
             ticker = self.ticker,
@@ -112,7 +143,7 @@ impl Notifier {
 
         format!(
             "<b>Missed Stake Warning</b>\n\n\
-             Address: <a href=\"{base}/address/{address}\">{short_addr}</a>{label_line}\n\
+             Address: <a href=\"{addr_url}\">{short_addr}</a>{label_line}\n\
              Balance: {balance} {ticker}\n\n\
              Expected stake every: <b>{expected_str}</b>\n\
              Time since last stake: <b>{elapsed_str}</b> ({overdue_factor:.1}x expected)\n\n\
@@ -120,7 +151,7 @@ impl Notifier {
              - Is your wallet running and unlocked for staking?\n\
              - Is your node fully synced?\n\
              - Is your balance still available (not locked)?",
-            base = self.explorer_url,
+            addr_url = self.address_url(address),
             short_addr = truncate_address(address),
             balance = satoshi_to_divi(balance_satoshis),
             ticker = self.ticker,
@@ -141,11 +172,12 @@ impl Notifier {
              Endpoints disagree on block hash:\n"
         );
 
-        let explorer = &self.explorer_url;
         for (ep_a, hash_a, ep_b, hash_b) in mismatches {
             text.push_str(&format!(
-                "\n  <b>{ep_a}</b>: <a href=\"{explorer}/block/{hash_a}\">{short_a}</a>\n\
-                   <b>{ep_b}</b>: <a href=\"{explorer}/block/{hash_b}\">{short_b}</a>\n",
+                "\n  <b>{ep_a}</b>: <a href=\"{url_a}\">{short_a}</a>\n\
+                   <b>{ep_b}</b>: <a href=\"{url_b}\">{short_b}</a>\n",
+                url_a = self.block_url(hash_a),
+                url_b = self.block_url(hash_b),
                 short_a = truncate_address(hash_a),
                 short_b = truncate_address(hash_b),
             ));
@@ -168,12 +200,12 @@ impl Notifier {
     ) -> String {
         const LOTTERY_INTERVAL: u64 = 10_080;
         let next_height = block_height + LOTTERY_INTERVAL;
-        let explorer = &self.explorer_url;
         let ticker = &self.ticker;
 
         let mut text = format!(
             "\u{1f3b0} <b>{chain_name} Lottery Block Winners</b>\n\
-             From Block <a href=\"{explorer}/block/{block_hash}\">{block_height}</a>\n"
+             From Block <a href=\"{block_url}\">{block_height}</a>\n",
+            block_url = self.block_url(block_hash),
         );
 
         // Group winners by amount tier (descending by amount)
@@ -197,7 +229,8 @@ impl Notifier {
             for addr in addrs {
                 let short = truncate_address(addr);
                 text.push_str(&format!(
-                    "\u{1f39f}\u{fe0f} <a href=\"{explorer}/address/{addr}\">{short}</a> - {amount_str} {ticker}\n",
+                    "\u{1f39f}\u{fe0f} <a href=\"{addr_url}\">{short}</a> - {amount_str} {ticker}\n",
+                    addr_url = self.address_url(addr),
                 ));
             }
         }
@@ -217,10 +250,7 @@ impl Notifier {
         txid: Option<&str>,
     ) -> String {
         let tx_link = match txid {
-            Some(id) => format!(
-                "\n\n<a href=\"{}/tx/{id}\">View transaction</a>",
-                self.explorer_url
-            ),
+            Some(id) => format!("\n\n<a href=\"{}\">View transaction</a>", self.tx_url(id)),
             None => String::new(),
         };
 

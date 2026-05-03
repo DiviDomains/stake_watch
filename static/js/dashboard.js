@@ -6,6 +6,7 @@
 // ============================================================
 
 import { api } from './api.js';
+import { chainConfig } from './chain.js';
 import { formatDivi, formatDiviShort, timeAgo, formatDuration, escapeHtml } from './helpers.js';
 
 export async function renderDashboard(container) {
@@ -21,7 +22,7 @@ export async function renderDashboard(container) {
                             <circle cx="12" cy="12" r="3"/>
                         </svg>
                         <div class="empty-state-title">No addresses watched</div>
-                        <p>Add your first Divi staking address to start monitoring rewards.</p>
+                        <p>Add your first ${chainConfig.name} staking address to start monitoring rewards.</p>
                         <button class="btn btn-primary mt-lg" onclick="navigate('watches')">
                             Add Watch
                         </button>
@@ -65,7 +66,7 @@ export async function renderDashboard(container) {
             <div class="portfolio-summary card-stagger">
                 <div class="portfolio-title">Total Portfolio</div>
                 <div class="portfolio-balance">
-                    ${formatDiviShort(totalBalance)}<span class="currency">DIVI</span>
+                    ${formatDiviShort(totalBalance)}<span class="currency">${chainConfig.ticker}</span>
                 </div>
                 <div class="portfolio-row">
                     <div>
@@ -92,24 +93,24 @@ export async function renderDashboard(container) {
             const a = item.analysis;
             const label = item.label ? escapeHtml(item.label) : 'Unnamed';
             const addrType = a?.address_type || 'standard';
-            const isTreasuryOrCharity = addrType === 'treasury' || addrType === 'charity';
+            const isExcluded = addrType === 'excluded';
             const isVault = a?.is_vault || false;
             const balance = a ? formatDiviShort(a.balance_satoshis || 0) : '--';
             const healthClass = a
-                ? (isTreasuryOrCharity ? 'health-healthy' : `health-${a.health}`)
+                ? (isExcluded ? 'health-healthy' : `health-${a.health}`)
                 : 'health-nodata';
-            const healthText = isTreasuryOrCharity
-                ? (addrType === 'treasury' ? 'Treasury' : 'Charity')
+            const healthText = isExcluded
+                ? 'Excluded'
                 : (a ? getHealthText(a.health) : 'No data');
 
-            // Treasury/Charity don't stake — show payment info instead
-            const stakesLabel = isTreasuryOrCharity ? 'Payments' : 'Stakes / 24h';
+            // Excluded addresses don't stake — show payment info instead
+            const stakesLabel = isExcluded ? 'Payments' : 'Stakes / 24h';
             const stakesDay = a?.stakes_24h ?? '--';
-            const expectedLabel = isTreasuryOrCharity ? 'Type' : 'Expected';
-            const expectedFreq = isTreasuryOrCharity
-                ? (addrType === 'treasury' ? 'Treasury' : 'Charity')
+            const expectedLabel = isExcluded ? 'Type' : 'Expected';
+            const expectedFreq = isExcluded
+                ? 'Excluded'
                 : (a?.expected_interval_secs ? formatDuration(a.expected_interval_secs) : '--');
-            const lastLabel = isTreasuryOrCharity ? 'Last Payment' : 'Last Stake';
+            const lastLabel = isExcluded ? 'Last Payment' : 'Last Stake';
             const lastStake = a?.last_stake_time ? timeAgo(a.last_stake_time) : 'Never';
 
             const portfolioBadge = item.include_in_portfolio

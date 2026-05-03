@@ -265,9 +265,10 @@ impl BlockProcessor {
     /// Record a stake event in the database and send a notification to all
     /// users watching the address.
     ///
-    /// Computes reward as `total_outputs - total_inputs` for the whole
-    /// transaction, which works correctly for both regular coinstakes
-    /// (split across multiple outputs) and vault stakes.
+    /// For addresses that appear in inputs (the staker), computes reward as
+    /// `address_outputs - address_inputs`. For addresses that only appear in
+    /// outputs (governance, masternode payments), uses the output amount directly
+    /// and overrides the event type to "payment".
     async fn record_and_notify(
         &self,
         address: &str,
@@ -275,54 +276,64 @@ impl BlockProcessor {
         tx: &Transaction,
         event_type: &str,
     ) -> anyhow::Result<()> {
-        // Compute reward as total_out - total_in for the entire transaction.
-        // This handles both regular coinstakes (which split across multiple
-        // outputs to the same address) and vault stakes correctly.
-        let total_out_sats: i64 = tx
-            .vout
-            .iter()
-            .map(|v| (v.value * 100_000_000.0).round() as i64)
-            .sum();
+        // Determine if this address is the staker (appears in inputs) or a payment recipient
+        let mut address_is_staker = false;
+        let mut address_input_sats: i64 = 0;
 
-        let mut total_in_sats: i64 = tx
-            .vin
-            .iter()
-            .filter_map(|v| v.value.map(|val| (val * 100_000_000.0).round() as i64))
-            .sum();
-
-        // If vin values not available, fetch the previous tx(s) to get input values
-        if total_in_sats == 0 {
-            for vin in &tx.vin {
-                if let Some(prev_txid) = &vin.txid {
-                    if let Ok(prev_tx) = self.rpc.get_raw_transaction(prev_txid).await {
-                        let prev_vout_idx = vin.vout.unwrap_or(0) as usize;
-                        if let Some(prev_vout) = prev_tx.vout.get(prev_vout_idx) {
-                            total_in_sats += (prev_vout.value * 100_000_000.0).round() as i64;
+        for vin in &tx.vin {
+            if vin.coinbase.is_some() {
+                continue;
+            }
+            // Check if this input comes from our address
+            if let Some(prev_txid) = &vin.txid {
+                if let Ok(prev_tx) = self.rpc.get_raw_transaction(prev_txid).await {
+                    let prev_vout_idx = vin.vout.unwrap_or(0) as usize;
+                    if let Some(prev_vout) = prev_tx.vout.get(prev_vout_idx) {
+                        let prev_addrs =
+                            prev_vout.script_pub_key.addresses.as_deref().unwrap_or(&[]);
+                        if prev_addrs.iter().any(|a| a == address) {
+                            address_is_staker = true;
+                            address_input_sats += (prev_vout.value * 100_000_000.0).round() as i64;
                         }
                     }
                 }
             }
         }
 
-        let reward_sats = total_out_sats - total_in_sats;
+        // Sum outputs going to THIS address only
+        let address_output_sats: i64 = tx
+            .vout
+            .iter()
+            .filter(|v| {
+                v.script_pub_key
+                    .addresses
+                    .as_ref()
+                    .map(|addrs| addrs.iter().any(|a| a == address))
+                    .unwrap_or(false)
+            })
+            .map(|v| (v.value * 100_000_000.0).round() as i64)
+            .sum();
 
-        // Sanity-check: reward should be positive and reasonable (< 10,000 DIVI)
-        let amount_satoshis = if reward_sats > 0 && reward_sats < 1_000_000_000_000 {
-            reward_sats
+        // Calculate amount based on whether this is a staker or payment recipient
+        let (amount_satoshis, effective_event_type) = if address_is_staker {
+            // Staker: reward = outputs_to_address - inputs_from_address
+            let reward = address_output_sats - address_input_sats;
+            let amount = if reward > 0 && reward < 1_000_000_000_000 {
+                reward
+            } else {
+                tracing::warn!(
+                    txid = %tx.txid,
+                    address_output_sats,
+                    address_input_sats,
+                    reward,
+                    "Per-address reward calculation looks wrong, using output amount"
+                );
+                address_output_sats
+            };
+            (amount, event_type)
         } else {
-            tracing::warn!(
-                txid = %tx.txid,
-                total_out_sats,
-                total_in_sats,
-                reward_sats,
-                "Reward calculation looks wrong, falling back to first non-zero vout"
-            );
-            // Fallback: use the first non-zero vout value
-            tx.vout
-                .iter()
-                .find(|v| v.value > 0.0)
-                .map(|v| (v.value * 100_000_000.0).round() as i64)
-                .unwrap_or(0)
+            // Payment recipient (governance, masternode): use output amount directly
+            (address_output_sats, "payment")
         };
 
         // Record the stake event in the database.
@@ -333,7 +344,7 @@ impl BlockProcessor {
             block.height,
             &block.hash,
             amount_satoshis,
-            event_type,
+            effective_event_type,
         )?;
 
         // Update last_stake_at and last_stake_height for all watchers of this address.
@@ -342,14 +353,12 @@ impl BlockProcessor {
         // Get users watching this address
         let users = db::get_users_for_address(&self.db, address)?;
 
-        let explorer_url = &self.notifier.explorer_url;
-
         // Send notifications — include label per user
         for chat_id in &users {
             let label = db::get_watch_label(&self.db, *chat_id, address).unwrap_or(None);
             let label_str = label.map(|l| format!(" ({})", l)).unwrap_or_default();
 
-            let (title, amount_label) = match event_type {
+            let (title, amount_label) = match effective_event_type {
                 "payment" => ("Block Payment Received!", "Amount"),
                 "lottery" => ("Lottery Win!", "Prize"),
                 _ => ("Stake Reward Detected!", "Reward"),
@@ -357,13 +366,15 @@ impl BlockProcessor {
 
             let message = format!(
                 "<b>{title}</b>\n\n\
-                 Address: <a href=\"{explorer_url}/address/{address}\">{address}</a>{label_str}\n\
-                 {amount_label}: <b>{} DIVI</b>\n\
+                 Address: <a href=\"{addr_url}\">{address}</a>{label_str}\n\
+                 {amount_label}: <b>{} {ticker}</b>\n\
                  Block: {}\n\
-                 <a href=\"{explorer_url}/tx/{txid}\">View Transaction</a>",
+                 <a href=\"{tx_url}\">View Transaction</a>",
                 satoshi_to_divi(amount_satoshis),
                 block.height,
-                txid = tx.txid,
+                addr_url = self.notifier.address_url(address),
+                tx_url = self.notifier.tx_url(&tx.txid),
+                ticker = &self.notifier.ticker,
             );
 
             if let Err(e) = self.notifier.send_message(*chat_id, &message).await {
@@ -448,18 +459,18 @@ impl BlockProcessor {
                             }
                         };
 
-                        let explorer_url = &self.notifier.explorer_url;
                         let short_addr = crate::utils::truncate_address(&winner.address);
                         let message = format!(
                             "\u{1f3c6} <b>Lottery Winner!</b>\n\n\
-                             Address: <a href=\"{explorer_url}/address/{addr}\">{short_addr}</a>\n\
-                             Prize: <b>{amount} DIVI</b>\n\
-                             Block: <a href=\"{explorer_url}/block/{hash}\">{height}</a>",
-                            addr = winner.address,
+                             Address: <a href=\"{addr_url}\">{short_addr}</a>\n\
+                             Prize: <b>{amount} {ticker}</b>\n\
+                             Block: <a href=\"{block_url}\">{height}</a>",
+                            addr_url = self.notifier.address_url(&winner.address),
+                            block_url = self.notifier.block_url(&block.hash),
                             amount =
                                 satoshi_to_divi((winner.amount * 100_000_000.0).round() as i64),
-                            hash = block.hash,
                             height = block.height,
+                            ticker = &self.notifier.ticker,
                         );
 
                         for chat_id in &users {

@@ -17,6 +17,7 @@ pub struct WebAppState {
     pub config: Arc<AppConfig>,
     pub secrets: Arc<Secrets>,
     pub explorer_url: String,
+    pub explorer_tx_path: String,
     pub block_tx: Option<tokio::sync::broadcast::Sender<String>>,
 }
 

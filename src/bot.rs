@@ -187,13 +187,12 @@ async fn command_handler(
 // ---------------------------------------------------------------------------
 
 /// Default watched addresses added for every new user.
-/// Built dynamically from chain config excluded_addresses.
 fn default_watches(config: &AppConfig) -> Vec<(String, String)> {
     config
         .chain
-        .excluded_addresses
+        .default_watches
         .iter()
-        .map(|addr| (addr.clone(), format!("{} System", config.chain.name)))
+        .map(|dw| (dw.address.clone(), dw.label.clone()))
         .collect()
 }
 

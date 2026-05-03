@@ -463,7 +463,7 @@ impl StakeAnalyzer {
         let mut positive_deltas: Vec<_> = deltas.into_iter().filter(|d| d.satoshis > 0).collect();
 
         // Sort by height descending so we process most recent first
-        positive_deltas.sort_by(|a, b| b.height.cmp(&a.height));
+        positive_deltas.sort_by_key(|d| std::cmp::Reverse(d.height));
 
         let mut latest_height: Option<u64> = None;
         let mut recorded = 0u32;

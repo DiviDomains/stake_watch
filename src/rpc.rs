@@ -3,7 +3,9 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 use tracing::{debug, warn};
 
@@ -136,6 +138,8 @@ pub struct JsonRpcClient {
     username: Option<String>,
     password: Option<String>,
     request_id: AtomicU64,
+    has_address_index: AtomicBool,
+    imported_addresses: Mutex<HashSet<String>>,
 }
 
 impl JsonRpcClient {
@@ -150,6 +154,8 @@ impl JsonRpcClient {
             username,
             password,
             request_id: AtomicU64::new(1),
+            has_address_index: AtomicBool::new(true),
+            imported_addresses: Mutex::new(HashSet::new()),
         }
     }
 
@@ -204,6 +210,56 @@ impl JsonRpcClient {
 
         Err(last_err.unwrap_or_else(|| anyhow!("RPC call failed for {method}")))
     }
+
+    /// Fallback for nodes without getaddressbalance (e.g., PIVX).
+    /// Uses importaddress (watch-only, no rescan) + listunspent to compute balance.
+    async fn wallet_balance_fallback(&self, address: &str) -> Result<AddressBalance> {
+        // Import address as watch-only if not already done (no rescan!)
+        // Check and mark under the lock, then call importaddress outside the lock
+        // to avoid holding a MutexGuard across an await point.
+        let needs_import = {
+            let imported = self.imported_addresses.lock().unwrap();
+            !imported.contains(address)
+        };
+        if needs_import {
+            // rescan=false is critical to avoid full blockchain scan
+            match self
+                .call("importaddress", json!([address, "", false]))
+                .await
+            {
+                Ok(_) => {}
+                Err(e) => {
+                    // May fail if already imported or wallet not available - that's OK
+                    debug!("importaddress for {address}: {e}");
+                }
+            }
+            self.imported_addresses
+                .lock()
+                .unwrap()
+                .insert(address.to_string());
+        }
+
+        // listunspent minconf=0, maxconf=9999999, [address]
+        let result = self
+            .call("listunspent", json!([0, 9999999, [address]]))
+            .await?;
+        let utxos: Vec<Value> =
+            serde_json::from_value(result).context("deserializing listunspent")?;
+
+        // Sum all UTXO amounts (they come as float BTC/PIV values)
+        let mut balance_sats: i64 = 0;
+        for utxo in &utxos {
+            if let Some(amount) = utxo.get("amount").and_then(|a| a.as_f64()) {
+                balance_sats += (amount * 1e8).round() as i64;
+            }
+        }
+
+        // We don't have "received" info from listunspent, use balance as approximation
+        Ok(AddressBalance {
+            balance: balance_sats,
+            received: balance_sats,
+        })
+    }
 }
 
 #[async_trait]
@@ -239,12 +295,29 @@ impl RpcClient for JsonRpcClient {
     }
 
     async fn get_address_balance(&self, address: &str) -> Result<AddressBalance> {
-        let result = self
-            .call("getaddressbalance", json!([{"addresses": [address]}]))
-            .await?;
-        let balance: AddressBalance =
-            serde_json::from_value(result).context("deserializing getaddressbalance")?;
-        Ok(balance)
+        if self.has_address_index.load(Ordering::Relaxed) {
+            match self
+                .call("getaddressbalance", json!([{"addresses": [address]}]))
+                .await
+            {
+                Ok(result) => {
+                    let balance: AddressBalance = serde_json::from_value(result)
+                        .context("deserializing getaddressbalance")?;
+                    return Ok(balance);
+                }
+                Err(e) => {
+                    let err_str = e.to_string();
+                    if err_str.contains("Method not found") || err_str.contains("-32601") {
+                        warn!("getaddressbalance not available, falling back to wallet RPC");
+                        self.has_address_index.store(false, Ordering::Relaxed);
+                        // Fall through to wallet fallback
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        self.wallet_balance_fallback(address).await
     }
 
     async fn get_address_deltas(
@@ -253,17 +326,34 @@ impl RpcClient for JsonRpcClient {
         start: Option<u64>,
         end: Option<u64>,
     ) -> Result<Vec<AddressDelta>> {
-        let mut params = json!({"addresses": [address]});
-        if let Some(s) = start {
-            params["start"] = json!(s);
+        if self.has_address_index.load(Ordering::Relaxed) {
+            let mut params = json!({"addresses": [address]});
+            if let Some(s) = start {
+                params["start"] = json!(s);
+            }
+            if let Some(e) = end {
+                params["end"] = json!(e);
+            }
+            match self.call("getaddressdeltas", json!([params])).await {
+                Ok(result) => {
+                    let deltas: Vec<AddressDelta> =
+                        serde_json::from_value(result).context("deserializing getaddressdeltas")?;
+                    return Ok(deltas);
+                }
+                Err(e) => {
+                    let err_str = e.to_string();
+                    if err_str.contains("Method not found") || err_str.contains("-32601") {
+                        warn!("getaddressdeltas not available, returning empty");
+                        self.has_address_index.store(false, Ordering::Relaxed);
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
         }
-        if let Some(e) = end {
-            params["end"] = json!(e);
-        }
-        let result = self.call("getaddressdeltas", json!([params])).await?;
-        let deltas: Vec<AddressDelta> =
-            serde_json::from_value(result).context("deserializing getaddressdeltas")?;
-        Ok(deltas)
+        // No wallet-based equivalent for address deltas.
+        // Block processor captures events in real-time, so this is acceptable.
+        Ok(vec![])
     }
 
     async fn get_lottery_block_winners(&self, hash: &str) -> Result<Option<LotteryWinners>> {
@@ -292,6 +382,12 @@ impl RpcClient for JsonRpcClient {
     }
 
     async fn get_vault_balance(&self, address: &str) -> Result<AddressBalance> {
+        if !self.has_address_index.load(Ordering::Relaxed) {
+            return Ok(AddressBalance {
+                balance: 0,
+                received: 0,
+            });
+        }
         // Use getaddressbalance with only_vaults=true (second param)
         let result = self
             .call("getaddressbalance", json!([{"addresses": [address]}, true]))
@@ -308,6 +404,9 @@ impl RpcClient for JsonRpcClient {
         start: Option<u64>,
         end: Option<u64>,
     ) -> Result<Vec<AddressDelta>> {
+        if !self.has_address_index.load(Ordering::Relaxed) {
+            return Ok(vec![]);
+        }
         let mut addr_obj = json!({"addresses": [address]});
         if let Some(s) = start {
             addr_obj["start"] = json!(s);

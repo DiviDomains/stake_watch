@@ -7,6 +7,7 @@
 // ============================================================
 
 import { api } from './api.js';
+import { chainConfig } from './chain.js';
 import { createStakeChart } from './chart-config.js';
 import {
     formatDivi,
@@ -179,7 +180,7 @@ export async function renderAddressDetail(container, address) {
                         </div>
                     </div>
                     <div class="calc-price-note text-xs text-hint" id="calc-price-note">
-                        Fetching DIVI price...
+                        Fetching ${chainConfig.ticker} price...
                     </div>
                 </div>`;
         }
@@ -299,21 +300,21 @@ export async function renderAddressDetail(container, address) {
 let diviPriceUsd = null;
 
 async function initCalculator() {
-    // Fetch DIVI price
+    // Fetch coin price
     try {
-        const priceData = await api.getDiviPrice();
+        const priceData = await api.getPrice();
         diviPriceUsd = priceData.usd || 0;
         const noteEl = document.getElementById('calc-price-note');
         if (noteEl) {
             noteEl.textContent = diviPriceUsd > 0
-                ? `DIVI price: $${diviPriceUsd.toFixed(6)} USD (via CoinGecko)`
-                : 'DIVI price not available';
+                ? `${chainConfig.ticker} price: $${diviPriceUsd.toFixed(6)} USD (via CoinGecko)`
+                : `${chainConfig.ticker} price not available`;
         }
     } catch {
         diviPriceUsd = 0;
         const noteEl = document.getElementById('calc-price-note');
         if (noteEl) {
-            noteEl.textContent = 'Could not fetch DIVI price';
+            noteEl.textContent = `Could not fetch ${chainConfig.ticker} price`;
         }
     }
 
@@ -340,15 +341,15 @@ window.updateCalculator = function() {
     const futureBalance = balance * Math.pow(1 + annualRor, years);
     const totalRewards = futureBalance - balance;
 
-    // Update DIVI values
+    // Update coin values
     const futureDiviEl = document.getElementById('calc-future-divi');
     if (futureDiviEl) {
-        futureDiviEl.textContent = formatCompactNumber(futureBalance) + ' DIVI';
+        futureDiviEl.textContent = formatCompactNumber(futureBalance) + ' ' + chainConfig.ticker;
     }
 
     const totalRewardsEl = document.getElementById('calc-total-rewards');
     if (totalRewardsEl) {
-        totalRewardsEl.textContent = '+' + formatCompactNumber(totalRewards) + ' DIVI';
+        totalRewardsEl.textContent = '+' + formatCompactNumber(totalRewards) + ' ' + chainConfig.ticker;
     }
 
     // Update USD values if price available

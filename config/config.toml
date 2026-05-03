@@ -5,6 +5,24 @@ alert_multiplier = 3
 alert_check_interval_secs = 300
 max_watches_per_user = 20
 
+[chain]
+name = "Divi"
+ticker = "DIVI"
+address_prefixes = ["D", "y"]
+excluded_addresses = ["DPhJsztbZafDc1YeyrRqSjmKjkmLJpQpUn", "DPujt2XAdHyRcZNB5ySZBBVKjzY2uXZGYq"]
+has_lottery = true
+has_vaults = true
+has_masternodes = false
+block_time_secs = 60
+
+[[chain.default_watches]]
+address = "DPhJsztbZafDc1YeyrRqSjmKjkmLJpQpUn"
+label = "Divi Treasury"
+
+[[chain.default_watches]]
+address = "DPujt2XAdHyRcZNB5ySZBBVKjzY2uXZGYq"
+label = "Divi Charity"
+
 [backend]
 type = "socketio"
 rpc_url = "https://services.divi.domains/api/rpc/"

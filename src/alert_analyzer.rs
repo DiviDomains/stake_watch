@@ -112,7 +112,6 @@ impl AlertAnalyzer {
 
         // ---- Per-transaction analysis ----
         let mut block_total_value: f64 = 0.0;
-        let explorer = &self.notifier.explorer_url;
 
         for tx in transactions {
             let tx_total: f64 = tx.vout.iter().map(|v| v.value).sum();
@@ -121,17 +120,16 @@ impl AlertAnalyzer {
             let input_count = tx.vin.len();
             let output_count = tx.vout.len();
             let short_txid = truncate_address(&tx.txid);
+            let tx_url = self.notifier.tx_url(&tx.txid);
 
             // Large transaction
             if tx_total >= DEFAULT_LARGE_TX {
                 anomalies.push(Anomaly {
                     alert_type: ALERT_LARGE_TX,
                     description: format!(
-                        "Large transaction detected: {:.2} DIVI in <a href=\"{explorer}/tx/{txid}\">{short}</a>",
+                        "Large transaction detected: {:.2} {} in <a href=\"{tx_url}\">{short_txid}</a>",
                         tx_total,
-                        explorer = explorer,
-                        txid = tx.txid,
-                        short = short_txid,
+                        self.notifier.ticker,
                     ),
                     value: tx_total,
                     default_threshold: DEFAULT_LARGE_TX,
@@ -144,11 +142,7 @@ impl AlertAnalyzer {
                 anomalies.push(Anomaly {
                     alert_type: ALERT_MANY_INPUTS,
                     description: format!(
-                        "Transaction with {} inputs: <a href=\"{explorer}/tx/{txid}\">{short}</a>",
-                        input_count,
-                        explorer = explorer,
-                        txid = tx.txid,
-                        short = short_txid,
+                        "Transaction with {input_count} inputs: <a href=\"{tx_url}\">{short_txid}</a>",
                     ),
                     value: input_count as f64,
                     default_threshold: DEFAULT_MANY_INPUTS,
@@ -161,11 +155,7 @@ impl AlertAnalyzer {
                 anomalies.push(Anomaly {
                     alert_type: ALERT_MANY_OUTPUTS,
                     description: format!(
-                        "Transaction with {} outputs: <a href=\"{explorer}/tx/{txid}\">{short}</a>",
-                        output_count,
-                        explorer = explorer,
-                        txid = tx.txid,
-                        short = short_txid,
+                        "Transaction with {output_count} outputs: <a href=\"{tx_url}\">{short_txid}</a>",
                     ),
                     value: output_count as f64,
                     default_threshold: DEFAULT_MANY_OUTPUTS,
@@ -180,11 +170,8 @@ impl AlertAnalyzer {
                         anomalies.push(Anomaly {
                             alert_type: ALERT_OP_RETURN,
                             description: format!(
-                                "OP_RETURN output (output #{n}) in <a href=\"{explorer}/tx/{txid}\">{short}</a>",
+                                "OP_RETURN output (output #{n}) in <a href=\"{tx_url}\">{short_txid}</a>",
                                 n = vout.n,
-                                explorer = explorer,
-                                txid = tx.txid,
-                                short = short_txid,
                             ),
                             value: 1.0,
                             default_threshold: 0.0,
@@ -200,12 +187,8 @@ impl AlertAnalyzer {
                         anomalies.push(Anomaly {
                             alert_type: ALERT_UNUSUAL_SCRIPT,
                             description: format!(
-                                "Unusual script type &#39;{script_type}&#39; (output #{n}) in <a href=\"{explorer}/tx/{txid}\">{short}</a>",
-                                script_type = script_type,
+                                "Unusual script type &#39;{script_type}&#39; (output #{n}) in <a href=\"{tx_url}\">{short_txid}</a>",
                                 n = vout.n,
-                                explorer = explorer,
-                                txid = tx.txid,
-                                short = short_txid,
                             ),
                             value: 1.0,
                             default_threshold: 0.0,
@@ -219,15 +202,14 @@ impl AlertAnalyzer {
         // ---- Block-level analysis ----
         if block_total_value >= DEFAULT_LARGE_BLOCK {
             let short_hash = truncate_address(&block.hash);
+            let block_url = self.notifier.block_url(&block.hash);
             anomalies.push(Anomaly {
                 alert_type: ALERT_LARGE_BLOCK,
                 description: format!(
-                    "Large block detected: {:.2} DIVI total in <a href=\"{explorer}/block/{hash}\">{short}</a> (height {})",
+                    "Large block detected: {:.2} {} total in <a href=\"{block_url}\">{short_hash}</a> (height {})",
                     block_total_value,
+                    self.notifier.ticker,
                     block.height,
-                    explorer = explorer,
-                    hash = block.hash,
-                    short = short_hash,
                 ),
                 value: block_total_value,
                 default_threshold: DEFAULT_LARGE_BLOCK,
@@ -284,27 +266,22 @@ impl AlertAnalyzer {
             }
 
             // Format the notification message (HTML)
-            let explorer = &self.notifier.explorer_url;
             let short_hash = truncate_address(&block.hash);
+            let block_url = self.notifier.block_url(&block.hash);
             let mut message = format!(
-                "\u{26a0}\u{fe0f} <b>Block Alert</b> (height <a href=\"{explorer}/block/{hash}\">{height}</a>)\n\n\
+                "\u{26a0}\u{fe0f} <b>Block Alert</b> (height <a href=\"{block_url}\">{height}</a>)\n\n\
                  Type: <code>{alert_type}</code>\n\
                  {description}\n\n\
-                 Block: <a href=\"{explorer}/block/{hash}\">{short_hash}</a>",
-                explorer = explorer,
-                hash = block.hash,
+                 Block: <a href=\"{block_url}\">{short_hash}</a>",
                 height = block.height,
                 alert_type = anomaly.alert_type,
                 description = anomaly.description,
-                short_hash = short_hash,
             );
             if let Some(ref txid) = anomaly.txid {
                 let short_txid = truncate_address(txid);
                 message.push_str(&format!(
-                    "\n<a href=\"{explorer}/tx/{txid}\">View transaction ({short_txid})</a>",
-                    explorer = explorer,
-                    txid = txid,
-                    short_txid = short_txid,
+                    "\n<a href=\"{tx_url}\">View transaction ({short_txid})</a>",
+                    tx_url = self.notifier.tx_url(txid),
                 ));
             }
 
