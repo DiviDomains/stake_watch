@@ -117,28 +117,31 @@ pub fn render(c: &CheckInput) -> String {
         return out;
     }
 
-    // Balance and coins
+    // Balance. The wallet holds it as separate coins (UTXOs): every deposit, stake reward
+    // and bit of change is one. Users read "coins" as transactions, so only the young ones
+    // are mentioned, as payments that can't stake yet.
     let vault = if c.is_vault { " (vault)" } else { "" };
     out.push_str(&format!(
-        "<b>Balance:</b> {} DIVI{vault}",
+        "<b>Balance:</b> {} DIVI{vault}\n",
         fmt_divi(c.balance_satoshis as f64 / 1e8, 2)
     ));
     let coins = c.coin_heights.as_deref().unwrap_or(&[]);
-    if !coins.is_empty() {
-        let n = coins.len();
-        out.push_str(&format!(" in {n} coin{}", if n == 1 { "" } else { "s" }));
-    }
-    out.push('\n');
     let young = coins
         .iter()
         .filter(|h| c.current_height.saturating_sub(**h) < MIN_STAKE_AGE_BLOCKS)
         .count();
     if young > 0 {
+        let (n, it) = if young == 1 {
+            ("1 payment".to_string(), "It")
+        } else {
+            (format!("{young} payments"), "They")
+        };
         out.push_str(&format!(
-            "{young} of your coins arrived less than an hour ago. Coins can stake once they are an hour old.\n"
+            "{n} into this wallet (a deposit, stake reward or change) arrived less than an hour ago. \
+             {it} can stake once an hour old.\n"
         ));
     } else if !coins.is_empty() {
-        out.push_str("All your coins are old enough to stake.\n");
+        out.push_str("Everything in it is old enough to stake.\n");
     }
     out.push('\n');
 
@@ -391,8 +394,11 @@ mod tests {
             text.contains("since your coins arrived 15 hours ago"),
             "{text}"
         );
-        assert!(text.contains("All your coins are old enough"), "{text}");
-        assert!(text.contains("2,258.83 DIVI in 3 coins"), "{text}");
+        assert!(
+            text.contains("Everything in it is old enough to stake"),
+            "{text}"
+        );
+        assert!(text.contains("2,258.83 DIVI\n"), "{text}");
         assert!(text.contains("once every 3.4 years"), "{text}");
         assert!(text.contains("about 415 DIVI"), "{text}");
         assert!(!text.contains("Overdue"), "{text}");
@@ -404,7 +410,7 @@ mod tests {
         c.coin_heights = Some(vec![4_250_567, 4_251_450]);
         let text = render(&c);
         assert!(
-            text.contains("1 of your coins arrived less than an hour ago"),
+            text.contains("1 payment into this wallet (a deposit, stake reward or change) arrived less than an hour ago. It can stake"),
             "{text}"
         );
     }
