@@ -415,8 +415,15 @@ impl RpcClient for ChainzClient {
     }
 
     async fn get_block_hash(&self, height: u64) -> Result<String> {
-        self.get_text(&format!("q=getblockhash&height={height}"))
-            .await
+        // chainz answers with a JSON string: the hash in quotes.
+        let text = self
+            .get_text(&format!("q=getblockhash&height={height}"))
+            .await?;
+        let hash = text.trim_matches('"');
+        if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(anyhow!("chainz getblockhash: unexpected answer '{text}'"));
+        }
+        Ok(hash.to_string())
     }
 
     async fn get_block(&self, hash: &str) -> Result<Block> {

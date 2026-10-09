@@ -792,6 +792,19 @@ pub fn record_fork_event(
     Ok(())
 }
 
+/// The most recent recorded fork: (height, endpoint_a, endpoint_b, detected_at).
+pub fn last_fork_event(db: &DbPool) -> Result<Option<(u64, String, String, String)>> {
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
+    let row = conn
+        .query_row(
+            "SELECT height, endpoint_a, endpoint_b, detected_at FROM fork_events ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get::<_, i64>(0)? as u64, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    Ok(row)
+}
+
 // ---------------------------------------------------------------------------
 // Aggregate counts (used by /status and /forkstatus commands)
 // ---------------------------------------------------------------------------

@@ -138,11 +138,14 @@ impl Notifier {
 
         let explorer = &self.explorer_url;
         for (ep_a, hash_a, ep_b, hash_b) in mismatches {
+            use teloxide::utils::html::escape;
+            let (ep_a, hash_a, ep_b, hash_b) =
+                (escape(ep_a), escape(hash_a), escape(ep_b), escape(hash_b));
             text.push_str(&format!(
                 "\n  <b>{ep_a}</b>: <a href=\"{explorer}/block/{hash_a}\">{short_a}</a>\n\
                    <b>{ep_b}</b>: <a href=\"{explorer}/block/{hash_b}\">{short_b}</a>\n",
-                short_a = truncate_address(hash_a),
-                short_b = truncate_address(hash_b),
+                short_a = truncate_address(&hash_a),
+                short_b = truncate_address(&hash_b),
             ));
         }
 

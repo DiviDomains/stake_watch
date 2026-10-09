@@ -7,8 +7,7 @@ use tracing::{debug, error, info, warn};
 use crate::config::ForkDetectionConfig;
 use crate::db::{self, DbPool};
 use crate::notifier::Notifier;
-use crate::rpc::JsonRpcClient;
-use crate::rpc::RpcClient;
+use crate::rpc::{ChainzClient, JsonRpcClient, RpcClient};
 
 // ---------------------------------------------------------------------------
 // ForkDetector
@@ -27,9 +26,112 @@ pub struct ForkDetector {
 
 /// An endpoint to query, with its name and RPC URL.
 #[derive(Debug, Clone)]
-struct Endpoint {
-    name: String,
-    rpc_url: String,
+pub struct Endpoint {
+    pub name: String,
+    pub rpc_url: String,
+}
+
+/// Blocks below the lowest tip at which endpoints are compared. Two nodes can
+/// hold different tip blocks for a moment without being on different chains.
+pub const CONFIRMATIONS: u64 = 3;
+
+/// One endpoint's answer: its tip, and its block hash at the compared height.
+#[derive(Debug, Clone)]
+pub struct EndpointView {
+    pub name: String,
+    pub tip: Option<u64>,
+    pub hash: Option<String>,
+}
+
+/// The result of asking every endpoint about the same block.
+#[derive(Debug, Clone)]
+pub struct Comparison {
+    /// The height compared.
+    pub height: u64,
+    pub views: Vec<EndpointView>,
+}
+
+impl Comparison {
+    /// Whether every endpoint that answered has the same block.
+    pub fn agree(&self) -> bool {
+        let mut hashes = self.views.iter().filter_map(|v| v.hash.as_deref());
+        let first = hashes.next();
+        hashes.all(|h| Some(h) == first)
+    }
+}
+
+/// A client for a fork endpoint: chainz's explorer API, or a node's JSON-RPC.
+pub fn endpoint_client(rpc_url: &str) -> Box<dyn RpcClient> {
+    if rpc_url.contains("chainz.cryptoid.info") {
+        Box::new(ChainzClient::new(rpc_url.to_string(), None))
+    } else {
+        Box::new(JsonRpcClient::new(rpc_url.to_string(), None, None))
+    }
+}
+
+/// Every endpoint from the config and the database, without duplicate names.
+pub fn gather_endpoints(config: &ForkDetectionConfig, db: &DbPool) -> Result<Vec<Endpoint>> {
+    let mut endpoints: Vec<Endpoint> = config
+        .endpoints
+        .iter()
+        .map(|ep| Endpoint {
+            name: ep.name.clone(),
+            rpc_url: ep.rpc_url.clone(),
+        })
+        .collect();
+    for ep in db::get_fork_endpoints(db)? {
+        endpoints.push(Endpoint {
+            name: ep.name,
+            rpc_url: ep.rpc_url,
+        });
+    }
+    let mut seen = std::collections::HashSet::new();
+    endpoints.retain(|ep| seen.insert(ep.name.clone()));
+    Ok(endpoints)
+}
+
+/// Ask each endpoint for its tip, then for its block hash a few blocks below
+/// the lowest tip. None when fewer than two endpoints answered.
+pub async fn compare(endpoints: &[Endpoint]) -> Option<Comparison> {
+    let clients: Vec<_> = endpoints
+        .iter()
+        .map(|ep| endpoint_client(&ep.rpc_url))
+        .collect();
+    let mut tips = Vec::new();
+    for (ep, client) in endpoints.iter().zip(&clients) {
+        let tip = match client.get_block_count().await {
+            Ok(h) => Some(h),
+            Err(e) => {
+                warn!(endpoint = %ep.name, error = %e, "Fork detection: endpoint unreachable");
+                None
+            }
+        };
+        tips.push(tip);
+    }
+    if tips.iter().flatten().count() < 2 {
+        return None;
+    }
+    let height = tips.iter().flatten().min()?.saturating_sub(CONFIRMATIONS);
+
+    let mut views = Vec::new();
+    for ((ep, client), tip) in endpoints.iter().zip(&clients).zip(tips) {
+        let hash = match tip {
+            Some(_) => match client.get_block_hash(height).await {
+                Ok(h) => Some(h),
+                Err(e) => {
+                    warn!(endpoint = %ep.name, height, error = %e, "Failed to get block hash for fork comparison");
+                    None
+                }
+            },
+            None => None,
+        };
+        views.push(EndpointView {
+            name: ep.name.clone(),
+            tip,
+            hash,
+        });
+    }
+    Some(Comparison { height, views })
 }
 
 impl ForkDetector {
@@ -70,38 +172,9 @@ impl ForkDetector {
         }
     }
 
-    /// Gather all endpoints from config and database, deduplicated by name.
-    fn gather_endpoints(&self) -> Result<Vec<Endpoint>> {
-        let mut endpoints: Vec<Endpoint> = Vec::new();
-        let mut seen_names = std::collections::HashSet::new();
-
-        // Config endpoints first
-        for ep in &self.config.endpoints {
-            if seen_names.insert(ep.name.clone()) {
-                endpoints.push(Endpoint {
-                    name: ep.name.clone(),
-                    rpc_url: ep.rpc_url.clone(),
-                });
-            }
-        }
-
-        // Then DB endpoints
-        let db_endpoints = db::get_fork_endpoints(&self.db)?;
-        for ep in db_endpoints {
-            if seen_names.insert(ep.name.clone()) {
-                endpoints.push(Endpoint {
-                    name: ep.name,
-                    rpc_url: ep.rpc_url,
-                });
-            }
-        }
-
-        Ok(endpoints)
-    }
-
     /// Single iteration of the fork detection check.
     async fn check_for_forks(&self) -> Result<()> {
-        let endpoints = self.gather_endpoints()?;
+        let endpoints = gather_endpoints(&self.config, &self.db)?;
 
         if endpoints.len() < 2 {
             debug!(
@@ -111,58 +184,16 @@ impl ForkDetector {
             return Ok(());
         }
 
-        // Query each endpoint for its current block count.
-        // Collect results, skipping unreachable endpoints.
-        let mut heights: HashMap<String, u64> = HashMap::new();
-        let mut reachable_endpoints: Vec<&Endpoint> = Vec::new();
-
-        for ep in &endpoints {
-            let client = JsonRpcClient::new(ep.rpc_url.clone(), None, None);
-            match client.get_block_count().await {
-                Ok(height) => {
-                    heights.insert(ep.name.clone(), height);
-                    reachable_endpoints.push(ep);
-                    debug!(endpoint = %ep.name, height, "Endpoint responded");
-                }
-                Err(e) => {
-                    warn!(
-                        endpoint = %ep.name,
-                        rpc_url = %ep.rpc_url,
-                        error = %e,
-                        "Fork detection: endpoint unreachable"
-                    );
-                }
-            }
-        }
-
-        if reachable_endpoints.len() < 2 {
+        let Some(cmp) = compare(&endpoints).await else {
             debug!("Fewer than 2 reachable endpoints, skipping comparison");
             return Ok(());
-        }
-
-        // Find the minimum height across all reachable endpoints so we
-        // compare hashes at a height that all endpoints should have.
-        let min_height = *heights.values().min().unwrap();
-
-        // Query block hash at min_height from each endpoint
-        let mut hashes: HashMap<String, String> = HashMap::new();
-
-        for ep in &reachable_endpoints {
-            let client = JsonRpcClient::new(ep.rpc_url.clone(), None, None);
-            match client.get_block_hash(min_height).await {
-                Ok(hash) => {
-                    hashes.insert(ep.name.clone(), hash);
-                }
-                Err(e) => {
-                    warn!(
-                        endpoint = %ep.name,
-                        height = min_height,
-                        error = %e,
-                        "Failed to get block hash for fork comparison"
-                    );
-                }
-            }
-        }
+        };
+        let min_height = cmp.height;
+        let hashes: HashMap<String, String> = cmp
+            .views
+            .into_iter()
+            .filter_map(|v| Some((v.name, v.hash?)))
+            .collect();
 
         if hashes.len() < 2 {
             debug!("Fewer than 2 hash responses, skipping comparison");

@@ -936,50 +936,74 @@ async fn handle_fork_unwatch(state: &BotState, telegram_id: i64) -> Result<Strin
 // ---------------------------------------------------------------------------
 
 async fn handle_fork_status(state: &BotState) -> Result<String> {
-    let config_endpoints = &state.config.fork_detection.endpoints;
-    let db_endpoints = db::get_fork_endpoints(&state.db)?;
+    use crate::fork_detector;
 
-    if config_endpoints.is_empty() && db_endpoints.is_empty() {
-        return Ok("<b>Fork Detection</b>\n\n\
-             No fork monitoring endpoints configured.\n\
-             Admins can add endpoints with /addfork."
-            .to_string());
+    let endpoints = fork_detector::gather_endpoints(&state.config.fork_detection, &state.db)?;
+    let mut text = String::from("<b>Fork Check</b>\n");
+    text.push_str("Do the nodes agree on the chain? A fork means some of them follow a different chain, so balances and stakes they report can't be trusted.\n\n");
+
+    if endpoints.len() < 2 {
+        text.push_str("Fewer than two nodes to compare, so a fork can't be seen. Admins can add one with /addfork.");
+        return Ok(text);
     }
 
-    let mut text = String::from("<b>Fork Detection Status</b>\n\n");
+    match fork_detector::compare(&endpoints).await {
+        None => {
+            text.push_str("Fewer than two nodes answered, so they can't be compared now.\n\n");
+            for ep in &endpoints {
+                text.push_str(&format!(
+                    "• {}: unreachable or no answer\n",
+                    escape(&ep.name)
+                ));
+            }
+        }
+        Some(cmp) => {
+            if cmp.agree() {
+                text.push_str(&format!(
+                    "✅ <b>All nodes agree</b> at block {} ({} blocks below the lowest tip).\n\n",
+                    cmp.height,
+                    fork_detector::CONFIRMATIONS
+                ));
+            } else {
+                text.push_str(&format!(
+                    "⚠️ <b>The nodes disagree</b> on block {}: they are on different chains.\n\n",
+                    cmp.height
+                ));
+            }
+            for v in &cmp.views {
+                let line = match (v.tip, &v.hash) {
+                    (Some(tip), Some(h)) => format!(
+                        "tip {tip}, block {} <code>{}…</code>",
+                        cmp.height,
+                        escape(&h[..h.len().min(12)])
+                    ),
+                    (Some(tip), None) => format!("tip {tip}, no hash for block {}", cmp.height),
+                    _ => "unreachable".to_string(),
+                };
+                text.push_str(&format!("• {}: {line}\n", escape(&v.name)));
+            }
+        }
+    }
 
-    if !state.config.fork_detection.enabled {
-        text.push_str("Status: <b>Disabled</b>\n\n");
-    } else {
-        text.push_str("Status: <b>Enabled</b>\n");
+    if let Some((height, a, b, at)) = db::last_fork_event(&state.db)? {
         text.push_str(&format!(
-            "Check interval: {}s\n\n",
-            state.config.fork_detection.check_interval_secs
+            "\nLast fork seen: block {height}, {} vs {}, at {} UTC\n",
+            escape(&a),
+            escape(&b),
+            escape(&at)
         ));
+    } else {
+        text.push_str("\nNo fork recorded.\n");
     }
 
-    text.push_str("<b>Endpoints:</b>\n");
-
-    // Query each endpoint for current height
-    for ep in config_endpoints {
-        let height_info = match query_endpoint_height(&ep.rpc_url).await {
-            Ok(h) => format!("height {h}"),
-            Err(_) => "unreachable".to_string(),
-        };
-        text.push_str(&format!("  {} - {} (config)\n", ep.name, height_info));
+    if state.config.fork_detection.enabled {
+        text.push_str(&format!(
+            "Checked automatically every {} min. /forkwatch to get an alert when they disagree.",
+            state.config.fork_detection.check_interval_secs.div_ceil(60)
+        ));
+    } else {
+        text.push_str("Automatic checking is off; this was a one-time check.");
     }
-
-    for ep in &db_endpoints {
-        let height_info = match query_endpoint_height(&ep.rpc_url).await {
-            Ok(h) => format!("height {h}"),
-            Err(_) => "unreachable".to_string(),
-        };
-        text.push_str(&format!("  {} - {} (user-added)\n", ep.name, height_info));
-    }
-
-    let watcher_count = db::count_fork_watchers(&state.db)?;
-    text.push_str(&format!("\nSubscribed users: {watcher_count}"));
-
     Ok(text)
 }
 
@@ -1054,9 +1078,9 @@ async fn handle_remove_fork(state: &BotState, telegram_id: i64, arg: &str) -> Re
 /// Query a single RPC endpoint for its block count. Used by /forkstatus and
 /// /addfork to verify connectivity.
 async fn query_endpoint_height(rpc_url: &str) -> Result<u64> {
-    use crate::rpc::JsonRpcClient;
-    let client = JsonRpcClient::new(rpc_url.to_string(), None, None);
-    client.get_block_count().await
+    crate::fork_detector::endpoint_client(rpc_url)
+        .get_block_count()
+        .await
 }
 
 // ---------------------------------------------------------------------------

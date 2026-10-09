@@ -22,9 +22,14 @@ interval_secs = 120
 enabled = false
 
 [fork_detection]
-enabled = false
+enabled = true
 check_interval_secs = 300
 
 [[fork_detection.endpoints]]
 name = "services"
 rpc_url = "https://services.divi.domains/api/rpc/"
+
+# An independent explorer, so a fork of our own node shows up.
+[[fork_detection.endpoints]]
+name = "chainz"
+rpc_url = "https://chainz.cryptoid.info/divi/api.dws"
