@@ -8,7 +8,7 @@ max_watches_per_user = 20
 [backend]
 type = "socketio"
 rpc_url = "https://services.divi.domains/api/rpc/"
-explorer_url = "https://services.divi.domains/explorer"
+explorer_url = "https://services.divi.domains/explorer2"
 
 [backend.socketio]
 url = "https://services.divi.domains"

@@ -5,7 +5,8 @@ use teloxide::prelude::*;
 use tracing::{error, info};
 
 use stake_watch::{
-    block_processor, bot, config, db, fork_detector, monitor, notifier, rpc, stake_analyzer, webapp,
+    block_processor, bot, config, db, fork_detector, monitor, network_weight, notifier, rpc,
+    stake_analyzer, webapp,
 };
 
 // ---------------------------------------------------------------------------
@@ -160,6 +161,13 @@ async fn main() -> Result<()> {
         (*config).clone(),
         (*secrets).clone(),
     ));
+    // Network staking supply: the configured figure until the chain is measured.
+    network_weight::init(config.general.network_staking_supply);
+    {
+        let (rpc, db) = (rpc_client.clone(), db_pool.clone());
+        tokio::spawn(async move { network_weight::run_refresh_loop(rpc, db).await });
+    }
+
     let bot_clone = bot.clone();
     let bot_handle = tokio::spawn(async move {
         bot::run_bot(bot_clone, bot_state).await;

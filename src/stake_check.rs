@@ -4,12 +4,14 @@
 //! my next stake come, and what will it earn. The math lives here as pure
 //! functions so it can be tested without a node or Telegram.
 
+use crate::utils::{address_link, explorer_link};
+
 /// Divi targets one block a minute.
 pub const SECS_PER_BLOCK: f64 = 60.0;
 pub const BLOCKS_PER_DAY: f64 = 1440.0;
 pub const BLOCKS_PER_YEAR: f64 = 525_600.0;
 
-/// How far back the stake backfill looks (`StakeAnalyzer::backfill_stakes`).
+/// How far back /check reads the chain, and the stake backfill (`StakeAnalyzer::backfill_stakes`) looks.
 pub const BACKFILL_BLOCKS: u64 = 50_000;
 
 /// Coins must be this many blocks old (1 hour) before they can stake.
@@ -87,6 +89,8 @@ pub fn poisson_at_most(k: u64, mean: f64) -> f64 {
 #[derive(Debug, Clone)]
 pub struct CheckInput {
     pub address: String,
+    /// Explorer base URL; the address, balance and last stake link to it.
+    pub explorer: String,
     pub label: Option<String>,
     pub balance_satoshis: i64,
     pub is_vault: bool,
@@ -107,7 +111,7 @@ pub fn render(c: &CheckInput) -> String {
     if let Some(label) = c.label.as_deref().filter(|l| !l.is_empty()) {
         out.push_str(&format!(" — {}", escape(label)));
     }
-    out.push_str(&format!("\n<code>{}</code>\n\n", c.address));
+    out.push_str(&format!("\n{}\n\n", address_link(&c.explorer, &c.address)));
 
     if c.balance_satoshis <= 0 {
         out.push_str(
@@ -122,8 +126,13 @@ pub fn render(c: &CheckInput) -> String {
     // are mentioned, as payments that can't stake yet.
     let vault = if c.is_vault { " (vault)" } else { "" };
     out.push_str(&format!(
-        "<b>Balance:</b> {} DIVI{vault}\n",
-        fmt_divi(c.balance_satoshis as f64 / 1e8, 2)
+        "<b>Balance:</b> {}{vault}\n",
+        explorer_link(
+            &c.explorer,
+            "address",
+            &c.address,
+            &format!("{} DIVI", fmt_divi(c.balance_satoshis as f64 / 1e8, 2))
+        )
     ));
     let coins = c.coin_heights.as_deref().unwrap_or(&[]);
     let young = coins
@@ -187,7 +196,13 @@ pub fn render(c: &CheckInput) -> String {
         Some(&last) => {
             let gap = c.current_height.saturating_sub(last);
             let chance = chance_of_gap(gap as f64, exp.blocks_per_stake);
-            let last_str = human_span(gap as f64 * SECS_PER_BLOCK);
+            // "5 hours" linked to the block of the last stake.
+            let last_str = explorer_link(
+                &c.explorer,
+                "block",
+                &last.to_string(),
+                &human_span(gap as f64 * SECS_PER_BLOCK),
+            );
             let span = (c.history_blocks as f64).min(30.0 * BLOCKS_PER_DAY);
             let recent = c
                 .stake_heights
@@ -359,6 +374,7 @@ mod tests {
         // arrived ~900 blocks ago, never staked.
         CheckInput {
             address: "DExampleSmallNewWalletAddress00000".into(),
+            explorer: "https://explorer.test".into(),
             label: Some("Desktop".into()),
             balance_satoshis: 225_883_465_313,
             is_vault: false,
@@ -398,7 +414,11 @@ mod tests {
             text.contains("Everything in it is old enough to stake"),
             "{text}"
         );
-        assert!(text.contains("2,258.83 DIVI\n"), "{text}");
+        assert!(text.contains("2,258.83 DIVI</a>\n"), "{text}");
+        assert!(
+            text.contains("<a href=\"https://explorer.test/address/DExampleSmallNewWalletAddress00000\">DExamp...s00000</a>"),
+            "{text}"
+        );
         assert!(text.contains("once every 3.4 years"), "{text}");
         assert!(text.contains("about 415 DIVI"), "{text}");
         assert!(!text.contains("Overdue"), "{text}");

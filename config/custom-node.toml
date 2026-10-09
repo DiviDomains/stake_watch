@@ -8,7 +8,7 @@ max_watches_per_user = 20
 [backend]
 type = "polling"
 rpc_url = "http://127.0.0.1:51473"
-explorer_url = "https://services.divi.domains/explorer"
+explorer_url = "https://services.divi.domains/explorer2"
 
 [backend.polling]
 interval_secs = 60

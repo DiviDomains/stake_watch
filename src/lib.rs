@@ -5,6 +5,7 @@ pub mod config;
 pub mod db;
 pub mod fork_detector;
 pub mod monitor;
+pub mod network_weight;
 pub mod notifier;
 pub mod rpc;
 pub mod stake_analyzer;

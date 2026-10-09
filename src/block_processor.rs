@@ -334,7 +334,9 @@ impl BlockProcessor {
         // Send notifications — include label per user
         for chat_id in &users {
             let label = db::get_watch_label(&self.db, *chat_id, address).unwrap_or(None);
-            let label_str = label.map(|l| format!(" ({})", l)).unwrap_or_default();
+            let label_str = label
+                .map(|l| format!(" ({})", teloxide::utils::html::escape(&l)))
+                .unwrap_or_default();
 
             let (title, amount_label) = match event_type {
                 "payment" => ("Block Payment Received!", "Amount"),
@@ -344,13 +346,14 @@ impl BlockProcessor {
 
             let message = format!(
                 "<b>{title}</b>\n\n\
-                 Address: <a href=\"{explorer_url}/address/{address}\">{address}</a>{label_str}\n\
+                 Address: {}{label_str}\n\
                  {amount_label}: <b>{} DIVI</b>\n\
                  Block: {}\n\
-                 <a href=\"{explorer_url}/tx/{txid}\">View Transaction</a>",
+                 Transaction: {}",
+                crate::utils::address_link(explorer_url, address),
                 satoshi_to_divi(amount_satoshis),
-                block.height,
-                txid = tx.txid,
+                crate::utils::block_link(explorer_url, block.height),
+                crate::utils::tx_link(explorer_url, &tx.txid),
             );
 
             if let Err(e) = self.notifier.send_message(*chat_id, &message).await {

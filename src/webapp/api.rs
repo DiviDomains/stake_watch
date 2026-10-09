@@ -696,10 +696,8 @@ async fn get_analysis(
         total / stakes.len() as i64
     };
 
-    let expected_secs = StakeAnalyzer::compute_expected_interval(
-        balance.balance,
-        state.config.general.network_staking_supply,
-    );
+    let expected_secs =
+        StakeAnalyzer::compute_expected_interval(balance.balance, crate::network_weight::get());
 
     let last_stake_info = if let Some(latest) = stakes.first() {
         let blocks_ago = current_height.saturating_sub(latest.block_height);

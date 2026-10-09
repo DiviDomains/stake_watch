@@ -160,10 +160,8 @@ impl StakeAnalyzer {
             };
 
             // Compute expected interval
-            let expected_secs = Self::compute_expected_interval(
-                effective_balance,
-                self.config.network_staking_supply,
-            );
+            let expected_secs =
+                Self::compute_expected_interval(effective_balance, crate::network_weight::get());
             if expected_secs.is_infinite() {
                 continue;
             }
@@ -314,7 +312,7 @@ impl StakeAnalyzer {
 
                 let block_hash = rpc.get_block_hash(height).await.unwrap_or_default();
 
-                if recorded < 100 {
+                {
                     match db::record_stake_event(
                         db,
                         address,
@@ -449,7 +447,7 @@ impl StakeAnalyzer {
         let mut positive_deltas: Vec<_> = deltas.into_iter().filter(|d| d.satoshis > 0).collect();
 
         // Sort by height descending so we process most recent first
-        positive_deltas.sort_by(|a, b| b.height.cmp(&a.height));
+        positive_deltas.sort_by_key(|a| std::cmp::Reverse(a.height));
 
         let mut latest_height: Option<u64> = None;
         let mut recorded = 0u32;
@@ -490,9 +488,9 @@ impl StakeAnalyzer {
                 },
             };
 
-            // Record up to 100 events
+            // Record every stake in the window (a cap here made busy wallets look idle)
             let evt_type = event_type_for_address(address);
-            if recorded < 100 {
+            {
                 match db::record_stake_event(
                     db,
                     address,

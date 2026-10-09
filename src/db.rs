@@ -575,6 +575,20 @@ pub fn sum_stake_rewards(db: &DbPool, address: &str) -> Result<i64> {
 }
 
 /// Median staker reward over recorded stakes at or above `min_height`, if any.
+/// Addresses with the most recorded stakes since `min_height`, busiest first.
+pub fn busiest_stakers(db: &DbPool, min_height: u64, limit: usize) -> Result<Vec<String>> {
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
+    let mut stmt = conn.prepare(
+        "SELECT address FROM stake_events
+         WHERE event_type = 'stake' AND block_height >= ?1
+         GROUP BY address ORDER BY COUNT(*) DESC LIMIT ?2",
+    )?;
+    let rows = stmt
+        .query_map(params![min_height as i64, limit as i64], |row| row.get(0))?
+        .collect::<std::result::Result<Vec<String>, _>>()?;
+    Ok(rows)
+}
+
 pub fn median_stake_reward(db: &DbPool, min_height: u64) -> Result<Option<i64>> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
     let mut stmt = conn.prepare(

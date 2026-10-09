@@ -34,6 +34,33 @@ pub fn truncate_address(address: &str) -> String {
     format!("{first}...{last}")
 }
 
+/// Telegram HTML link to an explorer page, e.g. `kind` "address", "tx" or "block".
+pub fn explorer_link(explorer: &str, kind: &str, id: &str, text: &str) -> String {
+    use teloxide::utils::html::escape;
+    format!(
+        "<a href=\"{}/{kind}/{}\">{}</a>",
+        explorer.trim_end_matches('/'),
+        escape(id),
+        escape(text)
+    )
+}
+
+/// Address shortened in the middle; the link carries the whole address.
+pub fn address_link(explorer: &str, address: &str) -> String {
+    explorer_link(explorer, "address", address, &truncate_address(address))
+}
+
+/// Transaction id shortened in the middle; the link carries the whole id.
+pub fn tx_link(explorer: &str, txid: &str) -> String {
+    explorer_link(explorer, "tx", txid, &truncate_address(txid))
+}
+
+/// Block height linked to its block.
+pub fn block_link(explorer: &str, height: u64) -> String {
+    let h = height.to_string();
+    explorer_link(explorer, "block", &h, &h)
+}
+
 /// Produce a human-friendly relative time string from a `NaiveDateTime` to now.
 ///
 /// Examples: "just now", "2 minutes ago", "3 hours ago", "5 days ago".
