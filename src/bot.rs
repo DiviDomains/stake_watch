@@ -142,7 +142,24 @@ async fn command_handler(
         }
     }
 
+    // A check takes a few seconds: answer at once, then edit that message into the result.
+    let in_group = !msg.chat.is_private();
     let is_check = matches!(cmd, Command::Check(_) | Command::Analyze(_));
+    let placeholder = if is_check {
+        let mut req = bot.send_message(msg.chat.id, "Researching…");
+        if in_group {
+            req = req.reply_parameters(ReplyParameters::new(msg.id).allow_sending_without_reply());
+        }
+        match req.await {
+            Ok(m) => Some(m.id),
+            Err(e) => {
+                warn!(chat_id = %msg.chat.id, error = %e, "Failed to send placeholder");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let response = match cmd {
         Command::Start => handle_start(&state, telegram_id, username.as_deref()).await,
         Command::Help => handle_help(&state, telegram_id),
@@ -171,29 +188,37 @@ async fn command_handler(
     };
 
     // In a group, answer as a reply to the command, and name whoever asked for a check.
-    let in_group = !msg.chat.is_private();
-    let response = match (response, &msg.from) {
-        (Ok(text), Some(user)) if in_group && is_check => Ok(format!("{}\n\n{text}", mention(user))),
-        (r, _) => r,
+    let text = match (response, &msg.from) {
+        (Ok(text), Some(user)) if in_group && is_check => format!("{}\n\n{text}", mention(user)),
+        (Ok(text), _) => text,
+        (Err(e), _) => {
+            error!(chat_id = %msg.chat.id, error = %e, "Command handler error");
+            format!(
+                "Internal error: {}",
+                teloxide::utils::html::escape(&e.to_string())
+            )
+        }
     };
 
-    match response {
-        Ok(text) => {
-            let mut req = bot.send_message(msg.chat.id, &text).parse_mode(ParseMode::Html);
-            if in_group {
-                req = req.reply_parameters(ReplyParameters::new(msg.id).allow_sending_without_reply());
-            }
-            if let Err(e) = req.await
-            {
-                error!(chat_id = %msg.chat.id, error = %e, "Failed to send message");
-            }
+    if let Some(id) = placeholder {
+        match bot
+            .edit_message_text(msg.chat.id, id, &text)
+            .parse_mode(ParseMode::Html)
+            .await
+        {
+            Ok(_) => return Ok(()),
+            // Deleted placeholder, or the edit failed: send the answer as a new message.
+            Err(e) => warn!(chat_id = %msg.chat.id, error = %e, "Failed to edit placeholder"),
         }
-        Err(e) => {
-            error!(chat_id = %msg.chat.id, error = %e, "Command handler error");
-            let _ = bot
-                .send_message(msg.chat.id, format!("Internal error: {e}"))
-                .await;
-        }
+    }
+    let mut req = bot
+        .send_message(msg.chat.id, &text)
+        .parse_mode(ParseMode::Html);
+    if in_group {
+        req = req.reply_parameters(ReplyParameters::new(msg.id).allow_sending_without_reply());
+    }
+    if let Err(e) = req.await {
+        error!(chat_id = %msg.chat.id, error = %e, "Failed to send message");
     }
 
     Ok(())
