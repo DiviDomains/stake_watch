@@ -574,6 +574,20 @@ pub fn sum_stake_rewards(db: &DbPool, address: &str) -> Result<i64> {
     Ok(total)
 }
 
+/// Median staker reward over recorded stakes at or above `min_height`, if any.
+pub fn median_stake_reward(db: &DbPool, min_height: u64) -> Result<Option<i64>> {
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
+    let mut stmt = conn.prepare(
+        "SELECT amount_satoshis FROM stake_events
+         WHERE event_type = 'stake' AND block_height >= ?1 AND amount_satoshis > 0
+         ORDER BY amount_satoshis",
+    )?;
+    let amounts = stmt
+        .query_map(params![min_height as i64], |row| row.get::<_, i64>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(amounts.get(amounts.len() / 2).copied())
+}
+
 /// Update last_alert_at for ALL watchers of the given address.
 pub fn update_last_alert(db: &DbPool, address: &str) -> Result<()> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;

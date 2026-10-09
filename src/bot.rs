@@ -13,6 +13,7 @@ use crate::config::{AppConfig, Secrets};
 use crate::db::{self, DbPool};
 use crate::rpc::RpcClient;
 use crate::stake_analyzer::StakeAnalyzer;
+use crate::stake_check;
 use crate::utils::{format_duration, satoshi_to_divi, time_ago, truncate_address};
 
 // ---------------------------------------------------------------------------
@@ -34,6 +35,8 @@ pub enum Command {
     List,
     #[command(description = "Analyze staking performance")]
     Analyze(String),
+    #[command(description = "Check how your staking is going")]
+    Check(String),
     #[command(description = "Bot status and health")]
     Status,
     #[command(description = "View alert subscriptions")]
@@ -145,6 +148,7 @@ async fn command_handler(
         Command::Unwatch(arg) => handle_unwatch(&state, telegram_id, &arg).await,
         Command::List => handle_list(&state, telegram_id).await,
         Command::Analyze(arg) => handle_analyze(&state, telegram_id, &arg).await,
+        Command::Check(arg) => handle_check(&state, telegram_id, &arg).await,
         Command::Status => handle_status(&state).await,
         Command::Alerts => handle_alerts(&state, telegram_id).await,
         Command::Alert(arg) => handle_alert(&state, telegram_id, &arg).await,
@@ -226,7 +230,7 @@ async fn handle_start(
         "lottery wins, and blockchain anomalies.\n\n",
         "<b>Quick start:</b>\n",
         "1. /watch &lt;address&gt; [label] - Start monitoring an address\n",
-        "2. /analyze - View staking performance analysis\n",
+        "2. /check - See how your staking is going\n",
         "3. /alerts - Set up blockchain alerts\n\n",
         "Use /help to see all available commands.",
     )
@@ -245,6 +249,7 @@ fn handle_help(state: &BotState, telegram_id: i64) -> Result<String> {
          /unwatch &lt;address&gt; - Stop watching\n\
          /list - List watched addresses\n\n\
          <b>Analysis</b>\n\
+         /check [address] - Is my staking OK, and what to expect\n\
          /analyze [address] - Staking performance\n\
          /status - Bot health &amp; stats\n\n\
          <b>Alerts</b>\n\
@@ -416,6 +421,135 @@ async fn handle_list(state: &BotState, telegram_id: i64) -> Result<String> {
     }
 
     Ok(text)
+}
+
+// ---------------------------------------------------------------------------
+// /check [address]
+// ---------------------------------------------------------------------------
+
+/// Addresses checked at once by a bare /check, to stay under Telegram's message limit.
+const MAX_CHECKS: usize = 3;
+
+async fn handle_check(state: &BotState, telegram_id: i64, arg: &str) -> Result<String> {
+    let trimmed = arg.trim();
+    if !trimmed.is_empty() {
+        let address = trimmed.split_whitespace().next().unwrap_or(trimmed);
+        if !(address.starts_with('D') && state.rpc.validate_address(address).await?.isvalid) {
+            return Ok("That doesn't look like a Divi address. \
+                       Use /check &lt;address&gt; with an address starting with D."
+                .to_string());
+        }
+        let watch = db::get_watches_for_user(&state.db, telegram_id)?
+            .into_iter()
+            .find(|w| w.address == address);
+        if db::get_users_for_address(&state.db, address)?.is_empty() {
+            // Nobody watches it, so no stakes are being recorded: scan recent history now.
+            if let Err(e) = StakeAnalyzer::backfill_stakes(&state.rpc, &state.db, address).await {
+                warn!(address, error = %e, "Check backfill failed");
+                return Ok(format!(
+                    "Could not read the history of <code>{}</code> right now. Try again in a minute.",
+                    truncate_address(address)
+                ));
+            }
+        }
+        return check_address(state, address, watch.as_ref()).await;
+    }
+
+    let watches: Vec<_> = db::get_watches_for_user(&state.db, telegram_id)?
+        .into_iter()
+        .filter(|w| !DEFAULT_WATCHES.iter().any(|(a, _)| *a == w.address))
+        .collect();
+    if watches.is_empty() {
+        return Ok("Which address? Use /check &lt;address&gt;, \
+                   or /watch &lt;address&gt; first and then just /check."
+            .to_string());
+    }
+    let mut parts = Vec::new();
+    for w in watches.iter().take(MAX_CHECKS) {
+        parts.push(check_address(state, &w.address, Some(w)).await?);
+    }
+    if watches.len() > MAX_CHECKS {
+        parts.push(format!(
+            "…and {} more. Use /check &lt;address&gt; for the others.",
+            watches.len() - MAX_CHECKS
+        ));
+    }
+    Ok(parts.join("\n\n──────────\n\n"))
+}
+
+async fn check_address(
+    state: &BotState,
+    address: &str,
+    watch: Option<&db::WatchedAddress>,
+) -> Result<String> {
+    let fail = |what: &str, e: anyhow::Error| {
+        warn!(address, error = %e, "Check: failed to fetch {what}");
+        Ok(format!(
+            "Could not read the {what} of <code>{}</code> right now. Try again in a minute.",
+            truncate_address(address)
+        ))
+    };
+    let current_height = match state.rpc.get_block_count().await {
+        Ok(h) => h,
+        Err(e) => return fail("block height", e),
+    };
+    let regular = match state.rpc.get_address_balance(address).await {
+        Ok(b) => b,
+        Err(e) => return fail("balance", e),
+    };
+    let (balance, is_vault) = if regular.balance > 0 {
+        (regular.balance, false)
+    } else {
+        match state.rpc.get_vault_balance(address).await {
+            Ok(v) if v.balance > 0 => (v.balance, true),
+            _ => (0, false),
+        }
+    };
+    let coin_heights = if is_vault || balance == 0 {
+        None
+    } else {
+        match state.rpc.get_address_utxos(address).await {
+            Ok(u) => u.map(|u| u.iter().map(|c| c.height).collect()),
+            Err(e) => {
+                warn!(address, error = %e, "Check: getaddressutxos failed");
+                None
+            }
+        }
+    };
+
+    let stake_heights = db::get_recent_stakes(&state.db, address, 1000)?
+        .into_iter()
+        .filter(|s| s.event_type == "stake")
+        .map(|s| s.block_height)
+        .collect();
+
+    // Stakes are complete from the backfill (BACKFILL_BLOCKS before the watch
+    // was added) onwards.
+    let watched_blocks = watch
+        .map(|w| {
+            let mins = (chrono::Utc::now().naive_utc() - w.added_at).num_minutes();
+            mins.max(0) as u64
+        })
+        .unwrap_or(0);
+    let history_blocks = (stake_check::BACKFILL_BLOCKS + watched_blocks).min(current_height);
+
+    let week_ago = current_height.saturating_sub(7 * stake_check::BLOCKS_PER_DAY as u64);
+    let reward_satoshis = db::median_stake_reward(&state.db, week_ago)?
+        .unwrap_or(stake_check::FALLBACK_STAKE_REWARD_SATOSHIS);
+
+    info!(address, balance, is_vault, "Stake check");
+    Ok(stake_check::render(&stake_check::CheckInput {
+        address: address.to_string(),
+        label: watch.and_then(|w| w.label.clone()),
+        balance_satoshis: balance,
+        is_vault,
+        coin_heights,
+        current_height,
+        stake_heights,
+        history_blocks,
+        network_staking_supply: state.config.general.network_staking_supply,
+        reward_satoshis,
+    }))
 }
 
 // ---------------------------------------------------------------------------

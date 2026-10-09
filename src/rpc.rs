@@ -76,6 +76,13 @@ pub struct AddressDelta {
     pub height: u64,
 }
 
+/// One unspent coin from `getaddressutxos`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AddressUtxo {
+    pub satoshis: i64,
+    pub height: u64,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AddressValidation {
     pub isvalid: bool,
@@ -124,6 +131,11 @@ pub trait RpcClient: Send + Sync {
         start: Option<u64>,
         end: Option<u64>,
     ) -> Result<Vec<AddressDelta>>;
+
+    /// The address's unspent coins, or None when the backend can't list them.
+    async fn get_address_utxos(&self, _address: &str) -> Result<Option<Vec<AddressUtxo>>> {
+        Ok(None)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +294,15 @@ impl RpcClient for JsonRpcClient {
                 Ok(None)
             }
         }
+    }
+
+    async fn get_address_utxos(&self, address: &str) -> Result<Option<Vec<AddressUtxo>>> {
+        let result = self
+            .call("getaddressutxos", json!([{"addresses": [address]}]))
+            .await?;
+        let utxos: Vec<AddressUtxo> =
+            serde_json::from_value(result).context("deserializing getaddressutxos")?;
+        Ok(Some(utxos))
     }
 
     async fn validate_address(&self, address: &str) -> Result<AddressValidation> {

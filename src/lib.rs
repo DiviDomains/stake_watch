@@ -8,5 +8,6 @@ pub mod monitor;
 pub mod notifier;
 pub mod rpc;
 pub mod stake_analyzer;
+pub mod stake_check;
 pub mod utils;
 pub mod webapp;
