@@ -5,7 +5,10 @@ use std::time::Instant;
 
 use anyhow::Result;
 use teloxide::prelude::*;
-use teloxide::types::{ParseMode, ReplyParameters, User};
+use teloxide::types::{
+    BotCommand, BotCommandScope, InlineKeyboardButton, InlineKeyboardMarkup, Me, ParseMode,
+    Recipient, ReplyParameters,
+};
 use teloxide::utils::command::BotCommands;
 use tracing::{error, info, warn};
 
@@ -14,7 +17,7 @@ use crate::db::{self, DbPool};
 use crate::rpc::RpcClient;
 use crate::stake_analyzer::StakeAnalyzer;
 use crate::stake_check;
-use crate::utils::{address_link, block_link, format_duration, time_ago};
+use crate::utils::{address_link, block_link, format_duration, satoshi_to_divi, time_ago, tx_link};
 use teloxide::utils::html::escape;
 
 // ---------------------------------------------------------------------------
@@ -39,6 +42,10 @@ pub enum Command {
     Analyze(String),
     #[command(description = "Check how your staking is going")]
     Check(String),
+    #[command(description = "Recent stakes of an address")]
+    History(String),
+    #[command(description = "Name or rename a watched address")]
+    Label(String),
     #[command(description = "Bot status and health")]
     Status,
     #[command(description = "View alert subscriptions")]
@@ -102,6 +109,8 @@ impl BotState {
 /// Start the Telegram bot polling loop. This function blocks until the bot
 /// is shut down via Ctrl-C or the process is terminated.
 pub async fn run_bot(bot: Bot, state: Arc<BotState>) {
+    publish_command_menus(&bot, &state).await;
+
     let handler = Update::filter_message()
         .filter_command::<Command>()
         .endpoint(command_handler);
@@ -123,7 +132,15 @@ async fn command_handler(
     msg: Message,
     cmd: Command,
     state: Arc<BotState>,
+    me: Me,
 ) -> ResponseResult<()> {
+    // Commands carry addresses and labels: only the public health commands work
+    // in a group, before anything registers the group as a user.
+    let in_group = !msg.chat.is_private();
+    if in_group && !matches!(cmd, Command::Status | Command::ForkStatus) {
+        return send_to_private_chat(&bot, &msg, &me).await;
+    }
+
     let telegram_id = msg.chat.id.0;
     let username = msg.from.as_ref().and_then(|u| u.username.clone());
 
@@ -144,14 +161,9 @@ async fn command_handler(
     }
 
     // A check takes a few seconds: answer at once, then edit that message into the result.
-    let in_group = !msg.chat.is_private();
     let is_check = matches!(cmd, Command::Check(_) | Command::Analyze(_));
     let placeholder = if is_check {
-        let mut req = bot.send_message(msg.chat.id, "Researching…");
-        if in_group {
-            req = req.reply_parameters(ReplyParameters::new(msg.id).allow_sending_without_reply());
-        }
-        match req.await {
+        match bot.send_message(msg.chat.id, "Researching…").await {
             Ok(m) => Some(m.id),
             Err(e) => {
                 warn!(chat_id = %msg.chat.id, error = %e, "Failed to send placeholder");
@@ -168,13 +180,10 @@ async fn command_handler(
         Command::Unwatch(arg) => handle_unwatch(&state, telegram_id, &arg).await,
         Command::List => handle_list(&state, telegram_id).await,
         Command::Check(arg) | Command::Analyze(arg) => {
-            // In a group, a bare /check means the asker's own watches (their private chat id).
-            let owner = match &msg.from {
-                Some(u) if !msg.chat.is_private() => u.id.0 as i64,
-                _ => telegram_id,
-            };
-            handle_check(&state, owner, &arg).await
+            handle_check(&state, telegram_id, &arg).await
         }
+        Command::History(arg) => handle_history(&state, telegram_id, &arg).await,
+        Command::Label(arg) => handle_label(&state, telegram_id, &arg).await,
         Command::Status => handle_status(&state).await,
         Command::Alerts => handle_alerts(&state, telegram_id).await,
         Command::Alert(arg) => handle_alert(&state, telegram_id, &arg).await,
@@ -188,11 +197,9 @@ async fn command_handler(
         Command::Broadcast(arg) => handle_broadcast(&state, &bot, telegram_id, &arg).await,
     };
 
-    // In a group, answer as a reply to the command, and name whoever asked for a check.
-    let text = match (response, &msg.from) {
-        (Ok(text), Some(user)) if in_group && is_check => format!("{}\n\n{text}", mention(user)),
-        (Ok(text), _) => text,
-        (Err(e), _) => {
+    let text = match response {
+        Ok(text) => text,
+        Err(e) => {
             error!(chat_id = %msg.chat.id, error = %e, "Command handler error");
             format!(
                 "Internal error: {}",
@@ -225,16 +232,76 @@ async fn command_handler(
     Ok(())
 }
 
-/// An HTML mention that notifies the user, with or without a username.
-fn mention(user: &User) -> String {
-    match &user.username {
-        Some(name) => format!("@{name}"),
-        None => format!(
-            "<a href=\"tg://user?id={}\">{}</a>",
-            user.id.0,
-            teloxide::utils::html::escape(&user.first_name)
-        ),
+/// Commands a group may use: they show nothing about anyone's addresses.
+const GROUP_COMMANDS: &[&str] = &["status", "forkstatus"];
+/// Shown only in an admin's private menu.
+const ADMIN_COMMANDS: &[&str] = &["addfork", "removefork", "users", "broadcast"];
+
+/// Telegram's command menus: everything in private chats, the health commands in
+/// groups, and the admin commands only in each admin's private chat.
+async fn publish_command_menus(bot: &Bot, state: &BotState) {
+    let all = Command::bot_commands();
+    let name = |c: &BotCommand| c.command.trim_start_matches('/').to_string();
+    let pick = |keep: &dyn Fn(&str) -> bool| -> Vec<BotCommand> {
+        all.iter().filter(|c| keep(&name(c))).cloned().collect()
+    };
+    let private = pick(&|n| !ADMIN_COMMANDS.contains(&n));
+    let group = pick(&|n| GROUP_COMMANDS.contains(&n));
+
+    let menus = [
+        (BotCommandScope::Default, group.clone()),
+        (BotCommandScope::AllGroupChats, group),
+        (BotCommandScope::AllPrivateChats, private),
+    ];
+    for (scope, commands) in menus {
+        if let Err(e) = bot.set_my_commands(commands).scope(scope.clone()).await {
+            warn!(?scope, error = %e, "Failed to publish command menu");
+        }
     }
+    for &id in &state.secrets.admin_telegram_ids {
+        let scope = BotCommandScope::Chat {
+            chat_id: Recipient::Id(ChatId(id)),
+        };
+        // Fails until the admin has started the bot; the shared private menu applies then.
+        if let Err(e) = bot.set_my_commands(all.clone()).scope(scope).await {
+            warn!(admin = id, error = %e, "Failed to publish admin command menu");
+        }
+    }
+}
+
+/// Answer a private-only command used in a group: point to the private chat, and
+/// delete the command when it carried an address or label for everyone to read.
+async fn send_to_private_chat(bot: &Bot, msg: &Message, me: &Me) -> ResponseResult<()> {
+    let has_args = msg
+        .text()
+        .is_some_and(|t| t.split_whitespace().nth(1).is_some());
+    let url = format!("https://t.me/{}?start=group", me.username());
+    let button = InlineKeyboardMarkup::new([[InlineKeyboardButton::url(
+        "Open private chat",
+        url.parse().expect("valid t.me url"),
+    )]]);
+    let mut text = String::from(
+        "Stake Watch commands work only in a private chat with me, \
+         so your addresses stay private.",
+    );
+    let mut deleted = false;
+    if has_args {
+        match bot.delete_message(msg.chat.id, msg.id).await {
+            Ok(_) => {
+                deleted = true;
+                text.push_str(" I removed your message from the group.");
+            }
+            Err(e) => warn!(chat_id = %msg.chat.id, error = %e, "Failed to delete group command"),
+        }
+    }
+    let mut req = bot.send_message(msg.chat.id, text).reply_markup(button);
+    if !deleted {
+        req = req.reply_parameters(ReplyParameters::new(msg.id).allow_sending_without_reply());
+    }
+    if let Err(e) = req.await {
+        warn!(chat_id = %msg.chat.id, error = %e, "Failed to send private-chat pointer");
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +352,7 @@ async fn handle_start(
         "<b>Quick start:</b>\n",
         "1. /watch &lt;address&gt; [label] - Start monitoring an address\n",
         "2. /check - See how your staking is going\n",
+        "   /history &lt;address&gt; - Your recent stakes\n",
         "3. /alerts - Set up blockchain alerts\n\n",
         "Use /help to see all available commands.",
     )
@@ -301,9 +369,11 @@ fn handle_help(state: &BotState, telegram_id: i64) -> Result<String> {
          <b>Watching</b>\n\
          /watch &lt;address&gt; [label] - Watch an address\n\
          /unwatch &lt;address&gt; - Stop watching\n\
-         /list - List watched addresses\n\n\
+         /list - List watched addresses\n\
+         /label &lt;address&gt; &lt;name&gt; - Name a watched address\n\n\
          <b>Analysis</b>\n\
          /check [address] - Is my staking OK, and what to expect\n\
+         /history &lt;address or name&gt; [n] - Recent stakes\n\
          /status - Bot health &amp; stats\n\n\
          <b>Alerts</b>\n\
          /alerts - View subscriptions\n\
@@ -312,7 +382,9 @@ fn handle_help(state: &BotState, telegram_id: i64) -> Result<String> {
          <b>Fork Detection</b>\n\
          /forkwatch - Subscribe to fork alerts\n\
          /forkunwatch - Unsubscribe from fork alerts\n\
-         /forkstatus - View fork monitoring status\n",
+         /forkstatus - View fork monitoring status\n\n\
+         Commands work in a private chat with me. In a group only /status \
+         and /forkstatus work, so nobody's addresses show there.\n",
     );
 
     if state.is_admin(telegram_id) {
@@ -475,6 +547,114 @@ async fn handle_list(state: &BotState, telegram_id: i64) -> Result<String> {
     }
 
     Ok(text)
+}
+
+// ---------------------------------------------------------------------------
+// /history <address|label> [count]
+// ---------------------------------------------------------------------------
+
+const HISTORY_DEFAULT: u32 = 10;
+const HISTORY_MAX: u32 = 50;
+
+/// A watched address named by its address or (case-insensitively) its label.
+fn find_watch(
+    state: &BotState,
+    telegram_id: i64,
+    name: &str,
+) -> Result<Option<db::WatchedAddress>> {
+    let watches = db::get_watches_for_user(&state.db, telegram_id)?;
+    Ok(watches
+        .iter()
+        .find(|w| w.address == name)
+        .or_else(|| {
+            watches.iter().find(|w| {
+                w.label
+                    .as_deref()
+                    .is_some_and(|l| l.eq_ignore_ascii_case(name))
+            })
+        })
+        .cloned())
+}
+
+async fn handle_history(state: &BotState, telegram_id: i64, arg: &str) -> Result<String> {
+    let mut words: Vec<&str> = arg.split_whitespace().collect();
+    if words.is_empty() {
+        return Ok("Usage: /history &lt;address or label&gt; [how many, up to 50]".to_string());
+    }
+    // A trailing number is the count; the rest is the address or label.
+    let count = match words.last().and_then(|w| w.parse::<u32>().ok()) {
+        Some(n) if words.len() > 1 => {
+            words.pop();
+            n.clamp(1, HISTORY_MAX)
+        }
+        _ => HISTORY_DEFAULT,
+    };
+    let name = words.join(" ");
+    let Some(watch) = find_watch(state, telegram_id, &name)? else {
+        return Ok(format!(
+            "You don't watch <code>{}</code>. Use /list to see your addresses, \
+             or /watch &lt;address&gt; first.",
+            escape(&name)
+        ));
+    };
+
+    let explorer = &state.config.backend.explorer_url;
+    let stakes = db::get_recent_stakes(&state.db, &watch.address, count)?;
+    let title = match &watch.label {
+        Some(l) if !l.is_empty() => {
+            format!("{} ({})", address_link(explorer, &watch.address), escape(l))
+        }
+        _ => address_link(explorer, &watch.address),
+    };
+    if stakes.is_empty() {
+        return Ok(format!(
+            "<b>Stake history</b> {title}\n\nNo stakes recorded yet. \
+             A newly watched address takes a few minutes to load."
+        ));
+    }
+    let mut text = format!("<b>Last {} stakes</b> {title}\n\n", stakes.len());
+    for e in &stakes {
+        let kind = if e.event_type == "stake" {
+            String::new()
+        } else {
+            format!(" ({})", escape(&e.event_type))
+        };
+        text.push_str(&format!(
+            "{} DIVI{kind} · block {} · {} · {}\n",
+            satoshi_to_divi(e.amount_satoshis),
+            block_link(explorer, e.block_height),
+            time_ago(&e.detected_at),
+            tx_link(explorer, &e.txid),
+        ));
+    }
+    Ok(text)
+}
+
+// ---------------------------------------------------------------------------
+// /label <address> [label]
+// ---------------------------------------------------------------------------
+
+async fn handle_label(state: &BotState, telegram_id: i64, arg: &str) -> Result<String> {
+    let mut parts = arg.trim().splitn(2, char::is_whitespace);
+    let address = parts.next().unwrap_or("");
+    if address.is_empty() {
+        return Ok("Usage: /label &lt;address&gt; &lt;name&gt; (no name clears it)".to_string());
+    }
+    let label = parts.next().map(str::trim).filter(|l| !l.is_empty());
+    if label.is_some_and(|l| l.chars().count() > 64) {
+        return Ok("Keep the name to 64 characters or fewer.".to_string());
+    }
+    let link = address_link(&state.config.backend.explorer_url, address);
+    if !db::update_label(&state.db, telegram_id, address, label)? {
+        return Ok(format!(
+            "You are not watching <code>{}</code>.",
+            escape(address)
+        ));
+    }
+    Ok(match label {
+        Some(l) => format!("{link} is now called <b>{}</b>.", escape(l)),
+        None => format!("Removed the name of {link}."),
+    })
 }
 
 // ---------------------------------------------------------------------------

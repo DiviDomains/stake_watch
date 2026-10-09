@@ -171,6 +171,11 @@ fn create_tables(conn: &Connection) -> Result<()> {
             added_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
+        CREATE TABLE IF NOT EXISTS meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS fork_events (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             height     INTEGER NOT NULL,
@@ -406,6 +411,21 @@ pub fn get_watches_for_user(db: &DbPool, telegram_id: i64) -> Result<Vec<Watched
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+/// Set or clear a watch's label. Returns false when the user doesn't watch the address.
+pub fn update_label(
+    db: &DbPool,
+    telegram_id: i64,
+    address: &str,
+    label: Option<&str>,
+) -> Result<bool> {
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
+    let n = conn.execute(
+        "UPDATE watched_addresses SET label = ?1 WHERE telegram_id = ?2 AND address = ?3",
+        params![label, telegram_id, address],
+    )?;
+    Ok(n > 0)
 }
 
 pub fn update_include_in_portfolio(
@@ -821,4 +841,27 @@ pub fn get_all_watches(db: &DbPool) -> Result<Vec<WatchedAddress>> {
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+// ---------------------------------------------------------------------------
+// Meta: one-off jobs and other small facts about the database itself
+// ---------------------------------------------------------------------------
+
+pub fn get_meta(db: &DbPool, key: &str) -> Result<Option<String>> {
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
+    let v = conn
+        .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    Ok(v)
+}
+
+pub fn set_meta(db: &DbPool, key: &str, value: &str) -> Result<()> {
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+        params![key, value],
+    )?;
+    Ok(())
 }

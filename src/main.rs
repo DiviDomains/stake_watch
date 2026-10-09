@@ -168,6 +168,13 @@ async fn main() -> Result<()> {
         tokio::spawn(async move { network_weight::run_refresh_loop(rpc, db).await });
     }
 
+    // Wallets loaded before the backfill kept every stake had only their last
+    // 100: load each watched address again, once.
+    {
+        let (rpc, db) = (rpc_client.clone(), db_pool.clone());
+        tokio::spawn(async move { refill_stake_history(rpc, db).await });
+    }
+
     let bot_clone = bot.clone();
     let bot_handle = tokio::spawn(async move {
         bot::run_bot(bot_clone, bot_state).await;
@@ -247,4 +254,36 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Load the stake history of every watched address again, once per database.
+/// The backfill only adds stakes it hasn't recorded, so running it twice is harmless.
+async fn refill_stake_history(
+    rpc: Arc<dyn stake_watch::rpc::RpcClient>,
+    db: stake_watch::db::DbPool,
+) {
+    const KEY: &str = "stake_history_refilled";
+    if matches!(stake_watch::db::get_meta(&db, KEY), Ok(Some(_))) {
+        return;
+    }
+    let addresses = match stake_watch::db::get_all_watched_addresses(&db) {
+        Ok(a) => a,
+        Err(e) => return error!(error = %e, "Stake history refill: cannot list addresses"),
+    };
+    info!(count = addresses.len(), "Stake history refill starting");
+    let mut failed = 0;
+    for address in &addresses {
+        if let Err(e) =
+            stake_watch::stake_analyzer::StakeAnalyzer::backfill_stakes(&rpc, &db, address).await
+        {
+            failed += 1;
+            tracing::warn!(address = %address, error = %e, "Stake history refill failed for address");
+        }
+    }
+    if failed == 0 {
+        if let Err(e) = stake_watch::db::set_meta(&db, KEY, "1") {
+            error!(error = %e, "Stake history refill: cannot record completion");
+        }
+    }
+    info!(count = addresses.len(), failed, "Stake history refill done");
 }
