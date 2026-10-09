@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use teloxide::prelude::*;
-use teloxide::types::ParseMode;
+use teloxide::types::{ParseMode, ReplyParameters, User};
 use teloxide::utils::command::BotCommands;
 use tracing::{error, info, warn};
 
@@ -14,7 +14,7 @@ use crate::db::{self, DbPool};
 use crate::rpc::RpcClient;
 use crate::stake_analyzer::StakeAnalyzer;
 use crate::stake_check;
-use crate::utils::{format_duration, satoshi_to_divi, time_ago, truncate_address};
+use crate::utils::{format_duration, time_ago, truncate_address};
 
 // ---------------------------------------------------------------------------
 // Commands
@@ -33,7 +33,8 @@ pub enum Command {
     Unwatch(String),
     #[command(description = "List your watched addresses")]
     List,
-    #[command(description = "Analyze staking performance")]
+    /// Old name of /check, kept so it still works; not in the menu.
+    #[command(hide)]
     Analyze(String),
     #[command(description = "Check how your staking is going")]
     Check(String),
@@ -141,14 +142,21 @@ async fn command_handler(
         }
     }
 
+    let is_check = matches!(cmd, Command::Check(_) | Command::Analyze(_));
     let response = match cmd {
         Command::Start => handle_start(&state, telegram_id, username.as_deref()).await,
         Command::Help => handle_help(&state, telegram_id),
         Command::Watch(arg) => handle_watch(&state, telegram_id, &arg).await,
         Command::Unwatch(arg) => handle_unwatch(&state, telegram_id, &arg).await,
         Command::List => handle_list(&state, telegram_id).await,
-        Command::Analyze(arg) => handle_analyze(&state, telegram_id, &arg).await,
-        Command::Check(arg) => handle_check(&state, telegram_id, &arg).await,
+        Command::Check(arg) | Command::Analyze(arg) => {
+            // In a group, a bare /check means the asker's own watches (their private chat id).
+            let owner = match &msg.from {
+                Some(u) if !msg.chat.is_private() => u.id.0 as i64,
+                _ => telegram_id,
+            };
+            handle_check(&state, owner, &arg).await
+        }
         Command::Status => handle_status(&state).await,
         Command::Alerts => handle_alerts(&state, telegram_id).await,
         Command::Alert(arg) => handle_alert(&state, telegram_id, &arg).await,
@@ -162,12 +170,20 @@ async fn command_handler(
         Command::Broadcast(arg) => handle_broadcast(&state, &bot, telegram_id, &arg).await,
     };
 
+    // In a group, answer as a reply to the command, and name whoever asked for a check.
+    let in_group = !msg.chat.is_private();
+    let response = match (response, &msg.from) {
+        (Ok(text), Some(user)) if in_group && is_check => Ok(format!("{}\n\n{text}", mention(user))),
+        (r, _) => r,
+    };
+
     match response {
         Ok(text) => {
-            if let Err(e) = bot
-                .send_message(msg.chat.id, &text)
-                .parse_mode(ParseMode::Html)
-                .await
+            let mut req = bot.send_message(msg.chat.id, &text).parse_mode(ParseMode::Html);
+            if in_group {
+                req = req.reply_parameters(ReplyParameters::new(msg.id).allow_sending_without_reply());
+            }
+            if let Err(e) = req.await
             {
                 error!(chat_id = %msg.chat.id, error = %e, "Failed to send message");
             }
@@ -181,6 +197,18 @@ async fn command_handler(
     }
 
     Ok(())
+}
+
+/// An HTML mention that notifies the user, with or without a username.
+fn mention(user: &User) -> String {
+    match &user.username {
+        Some(name) => format!("@{name}"),
+        None => format!(
+            "<a href=\"tg://user?id={}\">{}</a>",
+            user.id.0,
+            teloxide::utils::html::escape(&user.first_name)
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -250,7 +278,6 @@ fn handle_help(state: &BotState, telegram_id: i64) -> Result<String> {
          /list - List watched addresses\n\n\
          <b>Analysis</b>\n\
          /check [address] - Is my staking OK, and what to expect\n\
-         /analyze [address] - Staking performance\n\
          /status - Bot health &amp; stats\n\n\
          <b>Alerts</b>\n\
          /alerts - View subscriptions\n\
@@ -550,177 +577,6 @@ async fn check_address(
         network_staking_supply: state.config.general.network_staking_supply,
         reward_satoshis,
     }))
-}
-
-// ---------------------------------------------------------------------------
-// /analyze [address]
-// ---------------------------------------------------------------------------
-
-async fn handle_analyze(state: &BotState, telegram_id: i64, arg: &str) -> Result<String> {
-    let address = {
-        let trimmed = arg.trim();
-        if trimmed.is_empty() {
-            // Auto-select if user has exactly one watch
-            let watches = db::get_watches_for_user(&state.db, telegram_id)?;
-            match watches.len() {
-                0 => {
-                    return Ok("You have no watched addresses. Use /watch first.".to_string());
-                }
-                1 => watches[0].address.clone(),
-                _ => {
-                    return Ok("You have multiple watched addresses. Please specify:\n\
-                         /analyze &lt;address&gt;"
-                        .to_string());
-                }
-            }
-        } else {
-            trimmed.to_string()
-        }
-    };
-
-    // Fetch balance -- try regular address index first, fall back to vault scan
-    let (balance, is_vault) = {
-        let regular = match state.rpc.get_address_balance(&address).await {
-            Ok(b) => b,
-            Err(e) => {
-                warn!(address = %address, error = %e, "Failed to fetch balance");
-                return Ok(format!(
-                    "Could not fetch balance for <code>{}</code>.\nError: {e}",
-                    truncate_address(&address)
-                ));
-            }
-        };
-
-        if regular.balance > 0 {
-            (regular, false)
-        } else {
-            // Address index returned 0 -- try vault balance (only_vaults=true)
-            match state.rpc.get_vault_balance(&address).await {
-                Ok(vault_bal) if vault_bal.balance > 0 => {
-                    info!(address = %address, vault_balance = vault_bal.balance, "Using vault balance");
-                    (vault_bal, true)
-                }
-                _ => (regular, false),
-            }
-        }
-    };
-
-    // Get recent stakes from DB
-    let stakes = db::get_recent_stakes(&state.db, &address, 1000)?;
-    let current_height = state.rpc.get_block_count().await.unwrap_or(0);
-
-    // Use block height to determine when stakes happened (not detected_at
-    // which is just the DB insertion time). Divi blocks are ~60 seconds apart.
-    let blocks_24h = 24 * 60; // ~1,440 blocks
-    let blocks_7d = 7 * 24 * 60; // ~10,080 blocks
-    let blocks_30d = 30 * 24 * 60; // ~43,200 blocks
-
-    let stakes_24h = stakes
-        .iter()
-        .filter(|s| current_height.saturating_sub(s.block_height) < blocks_24h)
-        .count();
-
-    let stakes_7d = stakes
-        .iter()
-        .filter(|s| current_height.saturating_sub(s.block_height) < blocks_7d)
-        .count();
-
-    let stakes_30d = stakes
-        .iter()
-        .filter(|s| current_height.saturating_sub(s.block_height) < blocks_30d)
-        .count();
-
-    let avg_amount = if stakes.is_empty() {
-        0i64
-    } else {
-        let total: i64 = stakes.iter().map(|s| s.amount_satoshis).sum();
-        total / stakes.len() as i64
-    };
-
-    // Compute expected interval
-    let expected_secs = StakeAnalyzer::compute_expected_interval(
-        balance.balance,
-        state.config.general.network_staking_supply,
-    );
-
-    // Look up the watch to get last_stake_at and label
-    let watch = db::get_watches_for_user(&state.db, telegram_id)?
-        .into_iter()
-        .find(|w| w.address == address);
-
-    // Derive "last stake" from the most recent stake event's block height
-    // rather than detected_at (which is insertion time, not block time).
-    let last_stake_info = if let Some(latest) = stakes.first() {
-        let blocks_ago = current_height.saturating_sub(latest.block_height);
-        let secs_ago = blocks_ago * 60; // ~60s per block
-        let ago_str = format_duration(secs_ago);
-        Some((format!("{ago_str} ago"), secs_ago))
-    } else {
-        None
-    };
-
-    // Determine health status
-    let health = match &last_stake_info {
-        None => "No data",
-        Some((_, elapsed)) => {
-            if expected_secs.is_infinite() {
-                "No data"
-            } else if (*elapsed as f64) < expected_secs * 2.0 {
-                "Healthy"
-            } else {
-                "Overdue"
-            }
-        }
-    };
-
-    let expected_str = if expected_secs.is_infinite() {
-        "N/A (zero balance)".to_string()
-    } else {
-        format_duration(expected_secs as u64)
-    };
-
-    let last_stake_str = match &last_stake_info {
-        Some((ago, _)) => ago.clone(),
-        None => "Never".to_string(),
-    };
-
-    let label = watch
-        .as_ref()
-        .and_then(|w| w.label.as_ref())
-        .filter(|l| !l.is_empty())
-        .map(|l| format!(" ({l})"))
-        .unwrap_or_default();
-
-    let vault_indicator = if is_vault { " (vault)" } else { "" };
-
-    // For vault addresses, show "Total rewards earned" from DB instead of
-    // "Total received" which is inflated by recycled UTXO values.
-    let received_line = if is_vault {
-        let total_rewards = db::sum_stake_rewards(&state.db, &address).unwrap_or(0);
-        format!(
-            "<b>Total rewards earned:</b> {} DIVI",
-            satoshi_to_divi(total_rewards)
-        )
-    } else {
-        format!(
-            "<b>Total received:</b> {} DIVI",
-            satoshi_to_divi(balance.received)
-        )
-    };
-
-    Ok(format!(
-        "<b>Staking Analysis</b>\n\
-         <code>{address}</code>{label}\n\n\
-         <b>Balance:</b> {} DIVI{vault_indicator}\n\
-         {received_line}\n\n\
-         <b>Stakes (24h / 7d / 30d):</b> {stakes_24h} / {stakes_7d} / {stakes_30d}\n\
-         <b>Avg stake amount:</b> {} DIVI\n\n\
-         <b>Expected frequency:</b> {expected_str}\n\
-         <b>Last stake:</b> {last_stake_str}\n\
-         <b>Health:</b> {health}",
-        satoshi_to_divi(balance.balance),
-        satoshi_to_divi(avg_amount),
-    ))
 }
 
 // ---------------------------------------------------------------------------
