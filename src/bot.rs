@@ -10,7 +10,7 @@ use teloxide::types::{
     Recipient, ReplyParameters,
 };
 use teloxide::utils::command::BotCommands;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::config::{AppConfig, Secrets};
 use crate::db::{self, DbPool};
@@ -116,6 +116,11 @@ pub async fn run_bot(bot: Bot, state: Arc<BotState>) {
         .endpoint(command_handler);
 
     Dispatcher::builder(bot, handler)
+        // teloxide's default logs every update the bot ignores (group chatter, member changes) as
+        // a WARN with the whole update, names included, about 190 a day.
+        .default_handler(|upd| async move {
+            debug!(update_id = upd.id.0, "Ignored update");
+        })
         .dependencies(dptree::deps![state])
         .enable_ctrlc_handler()
         .build()

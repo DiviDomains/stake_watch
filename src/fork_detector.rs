@@ -117,7 +117,13 @@ pub async fn compare(endpoints: &[Endpoint]) -> Option<Comparison> {
     for ((ep, client), tip) in endpoints.iter().zip(&clients).zip(tips) {
         let hash = match tip {
             Some(_) => match client.get_block_hash(height).await {
-                Ok(h) => Some(h),
+                // Anything but a block hash (an error page, a quoted string) is no answer, not a
+                // fork: it once raised a false alert whose broken link Telegram then rejected.
+                Ok(h) if h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()) => Some(h),
+                Ok(h) => {
+                    warn!(endpoint = %ep.name, height, answer = %h.chars().take(80).collect::<String>(), "Fork detection: not a block hash");
+                    None
+                }
                 Err(e) => {
                     warn!(endpoint = %ep.name, height, error = %e, "Failed to get block hash for fork comparison");
                     None
