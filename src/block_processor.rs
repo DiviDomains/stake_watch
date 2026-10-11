@@ -252,65 +252,49 @@ impl BlockProcessor {
     /// Record a stake event in the database and send a notification to all
     /// users watching the address.
     ///
-    /// Computes reward as `total_outputs - total_inputs` for the whole
-    /// transaction, which works correctly for both regular coinstakes
-    /// (split across multiple outputs) and vault stakes.
+    /// The amount is the address's own: a block's coinstake also carries the
+    /// treasury, charity, masternode and lottery payments, so the whole
+    /// transaction's outputs minus inputs is not one address's reward. An
+    /// address that spent an input staked: its reward is what came back to the
+    /// staking addresses minus what they put in (vault stakes included). An
+    /// address that only received an output was paid (treasury and charity in
+    /// a treasury block), and gets "Block Payment Received!" for that output.
     async fn record_and_notify(
         &self,
         address: &str,
         block: &crate::rpc::Block,
         tx: &Transaction,
-        event_type: &str,
+        _event_type: &str,
     ) -> anyhow::Result<()> {
-        // Compute reward as total_out - total_in for the entire transaction.
-        // This handles both regular coinstakes (which split across multiple
-        // outputs to the same address) and vault stakes correctly.
-        let total_out_sats: i64 = tx
-            .vout
-            .iter()
-            .map(|v| (v.value * 100_000_000.0).round() as i64)
-            .sum();
-
-        let mut total_in_sats: i64 = tx
-            .vin
-            .iter()
-            .filter_map(|v| v.value.map(|val| (val * 100_000_000.0).round() as i64))
-            .sum();
-
-        // If vin values not available, fetch the previous tx(s) to get input values
-        if total_in_sats == 0 {
-            for vin in &tx.vin {
-                if let Some(prev_txid) = &vin.txid {
-                    if let Ok(prev_tx) = self.rpc.get_raw_transaction(prev_txid).await {
-                        let prev_vout_idx = vin.vout.unwrap_or(0) as usize;
-                        if let Some(prev_vout) = prev_tx.vout.get(prev_vout_idx) {
-                            total_in_sats += (prev_vout.value * 100_000_000.0).round() as i64;
-                        }
-                    }
-                }
+        // What each input spent, and from which address
+        let mut inputs: Vec<(Vec<String>, i64)> = Vec::new();
+        for vin in &tx.vin {
+            if let Some(prev_txid) = &vin.txid {
+                let prev_tx = self.rpc.get_raw_transaction(prev_txid).await?;
+                let prev_vout = prev_tx
+                    .vout
+                    .get(vin.vout.unwrap_or(0) as usize)
+                    .ok_or_else(|| anyhow::anyhow!("input {prev_txid} has no output {:?}", vin.vout))?;
+                inputs.push((
+                    prev_vout.script_pub_key.addresses.clone().unwrap_or_default(),
+                    to_sats(prev_vout.value),
+                ));
             }
         }
 
-        let reward_sats = total_out_sats - total_in_sats;
-
-        // Sanity-check: reward should be positive and reasonable (< 10,000 DIVI)
-        let amount_satoshis = if reward_sats > 0 && reward_sats < 1_000_000_000_000 {
-            reward_sats
-        } else {
-            tracing::warn!(
-                txid = %tx.txid,
-                total_out_sats,
-                total_in_sats,
-                reward_sats,
-                "Reward calculation looks wrong, falling back to first non-zero vout"
-            );
-            // Fallback: use the first non-zero vout value
-            tx.vout
-                .iter()
-                .find(|v| v.value > 0.0)
-                .map(|v| (v.value * 100_000_000.0).round() as i64)
-                .unwrap_or(0)
-        };
+        let (event_type, amount_satoshis) = classify(address, tx, &inputs);
+        if event_type == "payment" {
+            // A lottery win is paid here too: check_lottery_winners reports it as one
+            if let Ok(Some(lottery)) = self.rpc.get_lottery_block_winners(&block.hash).await {
+                if lottery.winners.iter().any(|w| w.address == address) {
+                    return Ok(());
+                }
+            }
+        }
+        if amount_satoshis <= 0 {
+            warn!(txid = %tx.txid, address, event_type, amount_satoshis, "No positive amount for watched address, not reported");
+            return Ok(());
+        }
 
         // Record the stake event in the database.
         db::record_stake_event(
@@ -527,5 +511,71 @@ impl BlockProcessor {
                 );
             }
         }
+    }
+}
+
+fn to_sats(v: f64) -> i64 {
+    (v * 100_000_000.0).round() as i64
+}
+
+/// What a coinstake or coinbase transaction gave `address`, given each input's
+/// address and value. An address that spent an input staked: its reward is what
+/// came back to the staking addresses minus what they put in. Any other address
+/// was paid: the treasury and charity in a treasury block, a masternode, a
+/// lottery winner.
+fn classify(address: &str, tx: &Transaction, inputs: &[(Vec<String>, i64)]) -> (&'static str, i64) {
+    let stakers: HashSet<&str> = inputs.iter().flat_map(|(a, _)| a.iter().map(String::as_str)).collect();
+    let paid_to = |to: &dyn Fn(&str) -> bool| -> i64 {
+        tx.vout
+            .iter()
+            .filter(|v| v.script_pub_key.addresses.as_ref().is_some_and(|a| a.iter().any(|x| to(x))))
+            .map(|v| to_sats(v.value))
+            .sum()
+    };
+    if stakers.contains(address) {
+        let total_in: i64 = inputs.iter().map(|(_, v)| v).sum();
+        ("stake", paid_to(&|x| stakers.contains(x)) - total_in)
+    } else {
+        ("payment", paid_to(&|x| x == address))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The coinstake of treasury block 4254182: the staker's output, then the
+    // treasury and charity payments in the same transaction.
+    const TREASURY: &str = "DPhJsztbZafDc1YeyrRqSjmKjkmLJpQpUn";
+    const CHARITY: &str = "DPujt2XAdHyRcZNB5ySZBBVKjzY2uXZGYq";
+    const STAKER: &str = "DEYpM4d6staker";
+
+    fn coinstake() -> Transaction {
+        serde_json::from_value(serde_json::json!({
+            "txid": "81b18bc0efe09ef92dc5c18c2f55d1927129dea726e8f53876ee129392fb8f56",
+            "vin": [{"txid": "prev", "vout": 1}],
+            "vout": [
+                {"value": 0.0, "n": 0, "scriptPubKey": {}},
+                {"value": 12588.68457031, "n": 1, "scriptPubKey": {"addresses": [STAKER]}},
+                {"value": 806480.0, "n": 2, "scriptPubKey": {"addresses": [TREASURY]}},
+                {"value": 50405.0, "n": 3, "scriptPubKey": {"addresses": [CHARITY]}},
+            ],
+        }))
+        .unwrap()
+    }
+
+    fn inputs() -> Vec<(Vec<String>, i64)> {
+        vec![(vec![STAKER.to_string()], to_sats(12173.68457031))]
+    }
+
+    #[test]
+    fn treasury_and_charity_in_a_coinstake_are_payments() {
+        assert_eq!(classify(TREASURY, &coinstake(), &inputs()), ("payment", 80_648_000_000_000));
+        assert_eq!(classify(CHARITY, &coinstake(), &inputs()), ("payment", 5_040_500_000_000));
+    }
+
+    #[test]
+    fn the_staker_gets_its_own_reward() {
+        assert_eq!(classify(STAKER, &coinstake(), &inputs()), ("stake", to_sats(415.0)));
     }
 }
