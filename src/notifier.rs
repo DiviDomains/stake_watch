@@ -154,6 +154,22 @@ impl Notifier {
         text
     }
 
+    /// A node replaced more of its recent blocks than a normal staking race (HTML).
+    pub fn format_reorg_alert(&self, endpoint: &str, fork_point: u64, depth: u64, tip: u64) -> String {
+        use teloxide::utils::html::escape;
+        let explorer = &self.explorer_url;
+        format!(
+            "<b>FORK DETECTED</b>\n\n\
+             Node <b>{}</b> switched chains: it replaced its last <b>{depth} blocks</b>, \
+             everything after block <a href=\"{explorer}/block/{fork_point}\">{fork_point}</a>.\n\
+             Tip now: {tip}\n\n\
+             One or two blocks is two stakers at the same moment. \
+             More means the node followed another chain for that long, \
+             and payments in the replaced blocks may have been reversed. Investigate.",
+            escape(endpoint),
+        )
+    }
+
     /// A node saw a side branch longer than a normal staking race (HTML).
     pub fn format_branch_alert(
         &self,

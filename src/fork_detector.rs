@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
@@ -24,6 +24,8 @@ pub struct ForkDetector {
     notifier: Arc<Notifier>,
     config: ForkDetectionConfig,
     admin_ids: Vec<i64>,
+    /// Per node, the hashes of its last REORG_WINDOW blocks at the last check.
+    seen: Mutex<HashMap<String, BTreeMap<u64, String>>>,
 }
 
 /// An endpoint to query, with its name and RPC URL.
@@ -186,6 +188,45 @@ pub fn fork_point(tip: &ChainTip) -> u64 {
     tip.height.saturating_sub(tip.branchlen)
 }
 
+/// Blocks re-checked at each tick for a reorg: about half an hour of blocks,
+/// six times what arrives between two checks.
+pub const REORG_WINDOW: u64 = 30;
+
+/// A node replaced blocks it had: `depth` of them, after block `fork_point`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reorg {
+    pub fork_point: u64,
+    pub depth: u64,
+}
+
+/// Compare a node's block hashes now with those at the last check. The lowest
+/// height whose hash changed is where the node switched chains; every block it
+/// had from there up was replaced. A reorg reaching below the window is
+/// reported as the window's depth: at least that deep.
+pub fn find_reorg(before: &BTreeMap<u64, String>, now: &BTreeMap<u64, String>) -> Option<Reorg> {
+    let lowest = before
+        .iter()
+        .find(|(h, hash)| now.get(h).is_some_and(|n| n != *hash))
+        .map(|(h, _)| *h)?;
+    let old_top = *before.keys().next_back()?;
+    Some(Reorg { fork_point: lowest - 1, depth: old_top - lowest + 1 })
+}
+
+/// What /forkstatus shows of the reorg watch.
+#[derive(Debug, Clone)]
+pub struct ReorgStatus {
+    pub checked_at: DateTime<Utc>,
+    pub since: DateTime<Utc>,
+    /// The deepest reorg seen since `since`: node, reorg, when.
+    pub deepest: Option<(String, Reorg, DateTime<Utc>)>,
+}
+
+static REORG_STATUS: Mutex<Option<ReorgStatus>> = Mutex::new(None);
+
+pub fn reorg_status() -> Option<ReorgStatus> {
+    REORG_STATUS.lock().ok()?.clone()
+}
+
 /// The last branch check: when it ran, and what each node reported. Kept for
 /// /forkstatus, which must not ask the nodes itself (each ask freezes them).
 static LAST_BRANCHES: Mutex<Option<(DateTime<Utc>, Vec<BranchView>)>> = Mutex::new(None);
@@ -223,6 +264,7 @@ impl ForkDetector {
             notifier,
             config,
             admin_ids,
+            seen: Mutex::new(HashMap::new()),
         }
     }
 
@@ -248,7 +290,10 @@ impl ForkDetector {
         let interval = std::time::Duration::from_secs(self.config.check_interval_secs);
         loop {
             match gather_endpoints(&self.config, &self.db) {
-                Ok(endpoints) => self.compare_endpoints(&endpoints).await,
+                Ok(endpoints) => {
+                    self.compare_endpoints(&endpoints).await;
+                    self.check_reorgs(&endpoints).await;
+                }
                 Err(e) => error!(error = %e, "Fork detection check failed"),
             }
             tokio::time::sleep(interval).await;
@@ -312,6 +357,73 @@ impl ForkDetector {
                 }
                 let message = self.notifier.format_branch_alert(&view.name, tip, point, view.active_height);
                 self.notify(&message).await;
+            }
+        }
+    }
+
+    /// Re-read each node's last REORG_WINDOW block hashes (a node, not an
+    /// explorer API: about 30 quick calls) and alert when more than
+    /// `max_branch_len` blocks it had were replaced since the last check.
+    async fn check_reorgs(&self, endpoints: &[Endpoint]) {
+        for ep in endpoints.iter().filter(|e| !e.rpc_url.contains("chainz.cryptoid.info")) {
+            let client = endpoint_client(&ep.rpc_url);
+            let now = match async {
+                let tip = client.get_block_count().await?;
+                let mut hashes = BTreeMap::new();
+                for h in tip.saturating_sub(REORG_WINDOW - 1)..=tip {
+                    hashes.insert(h, client.get_block_hash(h).await?);
+                }
+                anyhow::Ok(hashes)
+            }
+            .await
+            {
+                Ok(h) => h,
+                Err(e) => {
+                    warn!(endpoint = %ep.name, error = %e, "Reorg check: node unreachable");
+                    continue;
+                }
+            };
+            let before = match self.seen.lock() {
+                Ok(mut seen) => seen.insert(ep.name.clone(), now.clone()),
+                Err(_) => continue,
+            };
+            let reorg = before.as_ref().and_then(|b| find_reorg(b, &now));
+            self.record_reorg_status(&ep.name, reorg);
+            let Some(reorg) = reorg else { continue };
+            if reorg.depth <= self.config.max_branch_len {
+                info!(endpoint = %ep.name, fork_point = reorg.fork_point, depth = reorg.depth, "Reorg (normal)");
+                continue;
+            }
+            warn!(endpoint = %ep.name, fork_point = reorg.fork_point, depth = reorg.depth, "FORK DETECTED: deep reorg");
+            let new_hash = now.get(&(reorg.fork_point + 1)).cloned().unwrap_or_default();
+            let old_hash = before
+                .as_ref()
+                .and_then(|b| b.get(&(reorg.fork_point + 1)).cloned())
+                .unwrap_or_default();
+            if let Err(e) = db::record_fork_event(
+                &self.db,
+                reorg.fork_point,
+                &format!("{}: {}-block reorg, replaced", ep.name, reorg.depth),
+                &old_hash,
+                &format!("{}: new chain", ep.name),
+                &new_hash,
+            ) {
+                error!(error = %e, "Failed to record fork event");
+            }
+            let tip = *now.keys().next_back().unwrap_or(&0);
+            let message = self.notifier.format_reorg_alert(&ep.name, reorg.fork_point, reorg.depth, tip);
+            self.notify(&message).await;
+        }
+    }
+
+    fn record_reorg_status(&self, endpoint: &str, reorg: Option<Reorg>) {
+        let Ok(mut status) = REORG_STATUS.lock() else { return };
+        let now = Utc::now();
+        let s = status.get_or_insert(ReorgStatus { checked_at: now, since: now, deepest: None });
+        s.checked_at = now;
+        if let Some(r) = reorg {
+            if s.deepest.as_ref().is_none_or(|(_, d, _)| r.depth >= d.depth) {
+                s.deepest = Some((endpoint.to_string(), r, now));
             }
         }
     }
@@ -438,6 +550,29 @@ mod tests {
         assert_eq!(deep.len(), 1);
         assert_eq!(fork_point(deep[0]), 4_254_295);
         assert!(v.deep(5).is_empty());
+    }
+
+    fn chain(from: u64, hashes: &[&str]) -> BTreeMap<u64, String> {
+        hashes.iter().enumerate().map(|(i, h)| (from + i as u64, h.to_string())).collect()
+    }
+
+    #[test]
+    fn reorg_depth() {
+        let before = chain(100, &["a", "b", "c", "d", "e"]);
+        // two new blocks on top: no reorg
+        assert_eq!(find_reorg(&before, &chain(102, &["c", "d", "e", "f", "g"])), None);
+        // the last 3 blocks replaced, then one more
+        assert_eq!(
+            find_reorg(&before, &chain(101, &["b", "x", "y", "z", "w"])),
+            Some(Reorg { fork_point: 101, depth: 3 })
+        );
+        // the new chain is shorter than the old one for now: still 4 replaced
+        assert_eq!(
+            find_reorg(&before, &chain(99, &["_", "a", "x", "y"])),
+            Some(Reorg { fork_point: 100, depth: 4 })
+        );
+        // first check: nothing to compare
+        assert_eq!(find_reorg(&BTreeMap::new(), &before), None);
     }
 
     #[test]

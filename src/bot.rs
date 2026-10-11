@@ -987,6 +987,34 @@ async fn handle_fork_status(state: &BotState) -> Result<String> {
             }
         }
     }
+    match fork_detector::reorg_status() {
+        None => text.push_str("Reorgs: not checked yet since the bot started.\n"),
+        Some(st) => {
+            text.push_str(&format!(
+                "Reorgs (last {} blocks re-checked every check, last {} UTC): ",
+                fork_detector::REORG_WINDOW,
+                st.checked_at.format("%Y-%m-%d %H:%M")
+            ));
+            match st.deepest {
+                None => text.push_str(&format!(
+                    "✅ none since {} UTC\n",
+                    st.since.format("%Y-%m-%d %H:%M")
+                )),
+                Some((name, r, at)) => {
+                    let mark = if r.depth > max_len { "⚠️" } else { "✅" };
+                    text.push_str(&format!(
+                        "{mark} deepest since {} UTC: {} replaced {} block{} after block {} ({} UTC). Over {max_len} would be a real fork.\n",
+                        st.since.format("%Y-%m-%d %H:%M"),
+                        escape(&name),
+                        r.depth,
+                        if r.depth == 1 { "" } else { "s" },
+                        r.fork_point,
+                        at.format("%H:%M")
+                    ));
+                }
+            }
+        }
+    }
     text.push('\n');
 
     if endpoints.len() < 2 {
