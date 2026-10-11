@@ -88,6 +88,17 @@ pub struct AddressValidation {
     pub isvalid: bool,
 }
 
+/// One branch the node knows of, from getchaintips. The main chain has status
+/// "active" and branchlen 0; any other is a side branch, `branchlen` blocks long
+/// from where it left the main chain.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChainTip {
+    pub height: u64,
+    pub hash: String,
+    pub branchlen: u64,
+    pub status: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct LotteryWinners {
     pub height: u64,
@@ -136,6 +147,12 @@ pub trait RpcClient: Send + Sync {
     async fn get_address_utxos(&self, _address: &str) -> Result<Option<Vec<AddressUtxo>>> {
         Ok(None)
     }
+
+    /// Every chain branch the node knows of, or None when the backend can't
+    /// list them (an explorer API).
+    async fn get_chain_tips(&self) -> Result<Option<Vec<ChainTip>>> {
+        Ok(None)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +184,18 @@ impl JsonRpcClient {
 
     /// Send a JSON-RPC request. Retries once on network errors.
     async fn call(&self, method: &str, params: Value) -> Result<Value> {
+        self.call_with(method, params, None, 2).await
+    }
+
+    /// Send a JSON-RPC request with its own timeout, in place of the client's
+    /// 10 seconds, and up to `attempts` tries.
+    async fn call_with(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Option<Duration>,
+        attempts: u32,
+    ) -> Result<Value> {
         let id = self.request_id.fetch_add(1, Ordering::Relaxed);
         let body = json!({
             "jsonrpc": "1.0",
@@ -177,8 +206,11 @@ impl JsonRpcClient {
 
         let mut last_err: Option<anyhow::Error> = None;
 
-        for attempt in 0..2 {
+        for attempt in 0..attempts {
             let mut req = self.client.post(&self.rpc_url).json(&body);
+            if let Some(t) = timeout {
+                req = req.timeout(t);
+            }
 
             if let (Some(user), Some(pass)) = (&self.username, &self.password) {
                 req = req.basic_auth(user, Some(pass));
@@ -206,7 +238,7 @@ impl JsonRpcClient {
                 }
                 Err(e) => {
                     last_err = Some(e.into());
-                    if attempt == 0 {
+                    if attempt + 1 < attempts {
                         warn!(method, "RPC network error, retrying...");
                         tokio::time::sleep(Duration::from_millis(500)).await;
                     }
@@ -220,6 +252,15 @@ impl JsonRpcClient {
 
 #[async_trait]
 impl RpcClient for JsonRpcClient {
+    async fn get_chain_tips(&self) -> Result<Option<Vec<ChainTip>>> {
+        // The node answers nothing else while it builds this list (about 30
+        // seconds), so it gets a long timeout and is never retried.
+        let result = self
+            .call_with("getchaintips", json!([]), Some(Duration::from_secs(120)), 1)
+            .await?;
+        Ok(Some(serde_json::from_value(result)?))
+    }
+
     async fn get_block_count(&self) -> Result<u64> {
         let result = self.call("getblockcount", json!([])).await?;
         result

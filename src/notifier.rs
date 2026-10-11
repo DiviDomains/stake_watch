@@ -154,6 +154,32 @@ impl Notifier {
         text
     }
 
+    /// A node saw a side branch longer than a normal staking race (HTML).
+    pub fn format_branch_alert(
+        &self,
+        endpoint: &str,
+        tip: &crate::rpc::ChainTip,
+        fork_point: u64,
+        active_height: u64,
+    ) -> String {
+        use teloxide::utils::html::escape;
+        let explorer = &self.explorer_url;
+        format!(
+            "<b>FORK DETECTED</b>\n\n\
+             Node <b>{}</b> saw a side branch <b>{} blocks</b> long.\n\
+             It left the main chain after block <a href=\"{explorer}/block/{fork_point}\">{fork_point}</a> \
+             and ended at block {} (status: {}).\n\
+             Main chain tip: {active_height}\n\n\
+             A side branch of one or two blocks is two stakers at the same moment. \
+             A longer one means part of the network followed another chain for that long, \
+             and payments in its blocks may have been reversed. Investigate.",
+            escape(endpoint),
+            tip.branchlen,
+            tip.height,
+            escape(&tip.status),
+        )
+    }
+
     /// Format a lottery block summary notification (HTML).
     ///
     /// Shows all winners grouped by prize tier, with links to the explorer.

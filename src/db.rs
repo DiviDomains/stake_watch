@@ -815,6 +815,18 @@ pub fn record_fork_event(
     Ok(())
 }
 
+/// Whether a fork at `height` was already recorded for an endpoint name matching
+/// `endpoint_like` (an SQL LIKE pattern).
+pub fn fork_event_recorded(db: &DbPool, height: u64, endpoint_like: &str) -> Result<bool> {
+    let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM fork_events WHERE height = ?1 AND endpoint_a LIKE ?2",
+        params![height as i64, endpoint_like],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
 /// The most recent recorded fork: (height, endpoint_a, endpoint_b, detected_at).
 pub fn last_fork_event(db: &DbPool) -> Result<Option<(u64, String, String, String)>> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;

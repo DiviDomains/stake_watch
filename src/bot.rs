@@ -949,6 +949,46 @@ async fn handle_fork_status(state: &BotState) -> Result<String> {
     let mut text = String::from("<b>Fork Check</b>\n");
     text.push_str("Do the nodes agree on the chain? A fork means some of them follow a different chain, so balances and stakes they report can't be trusted.\n\n");
 
+    // Each node's own record of chain branches (getchaintips), from the last
+    // scheduled check: asking now would freeze the node for half a minute.
+    let max_len = state.config.fork_detection.max_branch_len;
+    let since = fork_detector::BRANCH_WINDOW;
+    match fork_detector::last_branches() {
+        None if state.config.fork_detection.branch_check_interval_secs == 0 => {}
+        None => text.push_str("Side branches: not checked yet since the bot started.\n"),
+        Some((at, views)) => {
+            text.push_str(&format!(
+                "Side branches (checked {} UTC):\n",
+                at.format("%Y-%m-%d %H:%M")
+            ));
+            if views.is_empty() {
+                text.push_str("• no node answered\n");
+            }
+            for view in views {
+                match view.recent.first() {
+                    None => text.push_str(&format!(
+                        "✅ {}: none in the {since} blocks before {}\n",
+                        escape(&view.name),
+                        view.active_height
+                    )),
+                    Some(longest) => {
+                        let mark = if longest.branchlen > max_len { "⚠️" } else { "✅" };
+                        text.push_str(&format!(
+                            "{mark} {}: {} in the {since} blocks before {}, longest {} block{} (after block {}). Over {max_len} would be a real fork.\n",
+                            escape(&view.name),
+                            view.recent.len(),
+                            view.active_height,
+                            longest.branchlen,
+                            if longest.branchlen == 1 { "" } else { "s" },
+                            fork_detector::fork_point(longest),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    text.push('\n');
+
     if endpoints.len() < 2 {
         text.push_str("Fewer than two nodes to compare, so a fork can't be seen. Admins can add one with /addfork.");
         return Ok(text);

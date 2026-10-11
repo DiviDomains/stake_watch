@@ -92,7 +92,7 @@ pub struct RpcAuthConfig {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ForkDetectionConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -100,10 +100,39 @@ pub struct ForkDetectionConfig {
     pub check_interval_secs: u64,
     #[serde(default)]
     pub endpoints: Vec<ForkEndpointConfig>,
+    /// A side branch longer than this many blocks is a fork worth an alert.
+    /// One or two blocks is two stakers at the same moment, which is normal.
+    #[serde(default = "default_max_branch_len")]
+    pub max_branch_len: u64,
+    /// How often to ask the nodes for their chain branches (getchaintips).
+    /// The call freezes a node for about 30 seconds (2026-10-11: 5,171 tips),
+    /// so it runs rarely; a branch stays listed, so nothing is missed. 0 = off.
+    #[serde(default = "default_branch_check_interval")]
+    pub branch_check_interval_secs: u64,
+}
+
+impl Default for ForkDetectionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            check_interval_secs: default_fork_check_interval(),
+            endpoints: Vec::new(),
+            max_branch_len: default_max_branch_len(),
+            branch_check_interval_secs: default_branch_check_interval(),
+        }
+    }
+}
+
+fn default_branch_check_interval() -> u64 {
+    12 * 3600
 }
 
 fn default_fork_check_interval() -> u64 {
     120
+}
+
+fn default_max_branch_len() -> u64 {
+    3
 }
 
 #[derive(Debug, Clone, Deserialize)]

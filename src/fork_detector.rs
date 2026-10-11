@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+use chrono::{DateTime, Utc};
 
 use anyhow::Result;
 use tracing::{debug, error, info, warn};
@@ -7,7 +9,7 @@ use tracing::{debug, error, info, warn};
 use crate::config::ForkDetectionConfig;
 use crate::db::{self, DbPool};
 use crate::notifier::Notifier;
-use crate::rpc::{ChainzClient, JsonRpcClient, RpcClient};
+use crate::rpc::{ChainTip, ChainzClient, JsonRpcClient, RpcClient};
 
 // ---------------------------------------------------------------------------
 // ForkDetector
@@ -140,6 +142,75 @@ pub async fn compare(endpoints: &[Endpoint]) -> Option<Comparison> {
     Some(Comparison { height, views })
 }
 
+/// Side branches are looked at for this many blocks back (about a day), so
+/// old history doesn't raise alerts on a restart.
+pub const BRANCH_WINDOW: u64 = 1440;
+
+/// One node's view of its own chain branches.
+#[derive(Debug, Clone)]
+pub struct BranchView {
+    pub name: String,
+    /// The main chain's tip height.
+    pub active_height: u64,
+    pub active_hash: String,
+    /// Side branches that ended within the window, longest first.
+    pub recent: Vec<ChainTip>,
+}
+
+impl BranchView {
+    pub fn from_tips(name: &str, tips: &[ChainTip]) -> Option<Self> {
+        let active = tips.iter().find(|t| t.status == "active")?;
+        let since = active.height.saturating_sub(BRANCH_WINDOW);
+        let mut recent: Vec<ChainTip> = tips
+            .iter()
+            .filter(|t| t.status != "active" && t.height > since)
+            .cloned()
+            .collect();
+        recent.sort_by(|a, b| b.branchlen.cmp(&a.branchlen).then(b.height.cmp(&a.height)));
+        Some(Self {
+            name: name.to_string(),
+            active_height: active.height,
+            active_hash: active.hash.clone(),
+            recent,
+        })
+    }
+
+    /// Side branches longer than `max_len` blocks.
+    pub fn deep(&self, max_len: u64) -> Vec<&ChainTip> {
+        self.recent.iter().filter(|t| t.branchlen > max_len).collect()
+    }
+}
+
+/// The last block both chains share: where the side branch left the main chain.
+pub fn fork_point(tip: &ChainTip) -> u64 {
+    tip.height.saturating_sub(tip.branchlen)
+}
+
+/// The last branch check: when it ran, and what each node reported. Kept for
+/// /forkstatus, which must not ask the nodes itself (each ask freezes them).
+static LAST_BRANCHES: Mutex<Option<(DateTime<Utc>, Vec<BranchView>)>> = Mutex::new(None);
+
+pub fn last_branches() -> Option<(DateTime<Utc>, Vec<BranchView>)> {
+    LAST_BRANCHES.lock().ok()?.clone()
+}
+
+/// Ask every node that can list its chain branches (getchaintips; an explorer
+/// API can't) for them.
+pub async fn branches(endpoints: &[Endpoint]) -> Vec<BranchView> {
+    let mut views = Vec::new();
+    for ep in endpoints {
+        match endpoint_client(&ep.rpc_url).get_chain_tips().await {
+            Ok(Some(tips)) => match BranchView::from_tips(&ep.name, &tips) {
+                Some(v) => views.push(v),
+                None => warn!(endpoint = %ep.name, "getchaintips: no active tip"),
+            },
+            Ok(None) => {}
+            Err(e) => warn!(endpoint = %ep.name, error = %e, "getchaintips failed"),
+        }
+    }
+    views
+}
+
 impl ForkDetector {
     pub fn new(
         db: DbPool,
@@ -155,44 +226,128 @@ impl ForkDetector {
         }
     }
 
-    /// Run the fork detection loop. Only runs if `config.enabled` is true.
-    /// Checks every `check_interval_secs` and compares block hashes across
-    /// all configured endpoints.
+    /// Run fork detection, if `config.enabled`: compare the endpoints' block
+    /// hashes every `check_interval_secs`, and look for deep side branches
+    /// every `branch_check_interval_secs`.
     pub async fn run(&self) {
         if !self.config.enabled {
             info!("Fork detection is disabled");
             return;
         }
-
-        let interval = tokio::time::Duration::from_secs(self.config.check_interval_secs);
         info!(
             interval_secs = self.config.check_interval_secs,
+            branch_interval_secs = self.config.branch_check_interval_secs,
             "Starting fork detection loop"
         );
+        // Two loops side by side: the branch check waits half a minute for its
+        // answer, and the endpoint comparison doesn't wait for it.
+        tokio::join!(self.compare_loop(), self.branch_loop());
+    }
 
+    async fn compare_loop(&self) {
+        let interval = std::time::Duration::from_secs(self.config.check_interval_secs);
         loop {
-            if let Err(e) = self.check_for_forks().await {
-                error!(error = %e, "Fork detection check failed");
+            match gather_endpoints(&self.config, &self.db) {
+                Ok(endpoints) => self.compare_endpoints(&endpoints).await,
+                Err(e) => error!(error = %e, "Fork detection check failed"),
             }
             tokio::time::sleep(interval).await;
         }
     }
 
-    /// Single iteration of the fork detection check.
-    async fn check_for_forks(&self) -> Result<()> {
-        let endpoints = gather_endpoints(&self.config, &self.db)?;
+    async fn branch_loop(&self) {
+        if self.config.branch_check_interval_secs == 0 {
+            info!("Branch check (getchaintips) is off");
+            return;
+        }
+        let interval = std::time::Duration::from_secs(self.config.branch_check_interval_secs);
+        loop {
+            match gather_endpoints(&self.config, &self.db) {
+                Ok(endpoints) => self.check_branches(&endpoints).await,
+                Err(e) => error!(error = %e, "Branch check failed"),
+            }
+            tokio::time::sleep(interval).await;
+        }
+    }
+
+    /// A side branch longer than `max_branch_len` on any node: part of the
+    /// network followed another chain for that many blocks. Alerted once per
+    /// fork, however long the branch grows.
+    async fn check_branches(&self, endpoints: &[Endpoint]) {
+        let views = branches(endpoints).await;
+        for v in &views {
+            info!(
+                endpoint = %v.name,
+                tip = v.active_height,
+                side_branches = v.recent.len(),
+                longest = v.recent.first().map_or(0, |t| t.branchlen),
+                "Chain branches checked"
+            );
+        }
+        if let Ok(mut last) = LAST_BRANCHES.lock() {
+            *last = Some((Utc::now(), views.clone()));
+        }
+        for view in views {
+            for tip in view.deep(self.config.max_branch_len) {
+                let point = fork_point(tip);
+                let side = format!("{}: {}-block side branch", view.name, tip.branchlen);
+                let main = format!("{}: main chain", view.name);
+                match db::fork_event_recorded(&self.db, point, &format!("{}: %side branch", view.name)) {
+                    Ok(false) => {}
+                    Ok(true) => continue,
+                    Err(e) => {
+                        error!(error = %e, "Failed to look up fork events");
+                        continue;
+                    }
+                }
+                warn!(
+                    endpoint = %view.name,
+                    fork_point = point,
+                    branchlen = tip.branchlen,
+                    status = %tip.status,
+                    "FORK DETECTED: deep side branch"
+                );
+                if let Err(e) = db::record_fork_event(&self.db, point, &side, &tip.hash, &main, &view.active_hash) {
+                    error!(error = %e, "Failed to record fork event");
+                }
+                let message = self.notifier.format_branch_alert(&view.name, tip, point, view.active_height);
+                self.notify(&message).await;
+            }
+        }
+    }
+
+    /// Send a fork alert to the fork watchers and the admins.
+    async fn notify(&self, message: &str) {
+        let mut notify_ids = db::get_fork_watchers(&self.db).unwrap_or_default();
+        for &admin_id in &self.admin_ids {
+            if !notify_ids.contains(&admin_id) {
+                notify_ids.push(admin_id);
+            }
+        }
+        if notify_ids.is_empty() {
+            info!("Fork detected but no users subscribed for notifications");
+            return;
+        }
+        info!(notify_count = notify_ids.len(), "Sending fork detection alerts");
+        if let Err(e) = self.notifier.notify_users(&notify_ids, message).await {
+            error!(error = %e, "Failed to send fork detection notifications");
+        }
+    }
+
+    /// The endpoints' blocks at the same height: a node on its own chain.
+    async fn compare_endpoints(&self, endpoints: &[Endpoint]) {
 
         if endpoints.len() < 2 {
             debug!(
                 endpoint_count = endpoints.len(),
                 "Need at least 2 endpoints for fork detection, skipping"
             );
-            return Ok(());
+            return;
         }
 
-        let Some(cmp) = compare(&endpoints).await else {
+        let Some(cmp) = compare(endpoints).await else {
             debug!("Fewer than 2 reachable endpoints, skipping comparison");
-            return Ok(());
+            return;
         };
         let min_height = cmp.height;
         let hashes: HashMap<String, String> = cmp
@@ -203,7 +358,7 @@ impl ForkDetector {
 
         if hashes.len() < 2 {
             debug!("Fewer than 2 hash responses, skipping comparison");
-            return Ok(());
+            return;
         }
 
         // Compare all pairs for mismatches
@@ -234,7 +389,7 @@ impl ForkDetector {
                 endpoint_count = hashes.len(),
                 "No fork detected -- all endpoints agree"
             );
-            return Ok(());
+            return;
         }
 
         // FORK DETECTED
@@ -255,32 +410,38 @@ impl ForkDetector {
         // Build notification message
         let message = self.notifier.format_fork_alert(min_height, &mismatches);
 
-        // Notify all fork watchers
-        let fork_watchers = db::get_fork_watchers(&self.db).unwrap_or_default();
+        warn!(height = min_height, "Sending fork alert for disagreeing endpoints");
+        self.notify(&message).await;
+    }
+}
 
-        // Merge fork watchers and admin IDs, deduplicating
-        let mut notify_ids: Vec<i64> = fork_watchers;
-        for &admin_id in &self.admin_ids {
-            if !notify_ids.contains(&admin_id) {
-                notify_ids.push(admin_id);
-            }
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        if notify_ids.is_empty() {
-            info!("Fork detected but no users subscribed for notifications");
-            return Ok(());
-        }
+    fn tip(height: u64, branchlen: u64, status: &str) -> ChainTip {
+        ChainTip { height, hash: format!("{height:064x}"), branchlen, status: status.to_string() }
+    }
 
-        info!(
-            height = min_height,
-            notify_count = notify_ids.len(),
-            "Sending fork detection alerts"
-        );
+    #[test]
+    fn deep_recent_branches_only() {
+        let tips = vec![
+            tip(4_254_316, 0, "active"),
+            tip(4_254_108, 1, "valid-headers"),
+            tip(4_247_983, 2, "valid-fork"),
+            tip(4_254_300, 5, "valid-fork"),
+            tip(4_200_000, 9, "valid-fork"), // more than a day old
+        ];
+        let v = BranchView::from_tips("services", &tips).unwrap();
+        assert_eq!(v.active_height, 4_254_316);
+        let deep = v.deep(3);
+        assert_eq!(deep.len(), 1);
+        assert_eq!(fork_point(deep[0]), 4_254_295);
+        assert!(v.deep(5).is_empty());
+    }
 
-        if let Err(e) = self.notifier.notify_users(&notify_ids, &message).await {
-            error!(error = %e, "Failed to send fork detection notifications");
-        }
-
-        Ok(())
+    #[test]
+    fn no_active_tip_is_no_view() {
+        assert!(BranchView::from_tips("x", &[tip(5, 1, "valid-fork")]).is_none());
     }
 }
