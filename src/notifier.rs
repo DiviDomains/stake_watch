@@ -234,6 +234,12 @@ impl Notifier {
     /// Send an HTML message to a single Telegram chat. Returns `Ok(())` on
     /// success or if the user has blocked the bot (logged and skipped).
     pub async fn send_message(&self, telegram_id: i64, message: &str) -> Result<()> {
+        // Alerts go to people only. A negative id is a group or channel (the public
+        // Divi group got stake alerts this way): refuse it whatever the database says.
+        if telegram_id <= 0 {
+            warn!(telegram_id, "Refusing to send an alert to a group or channel");
+            anyhow::bail!("{telegram_id} is a group or channel, not a user");
+        }
         let chat_id = ChatId(telegram_id);
         match self
             .bot

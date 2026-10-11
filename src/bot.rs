@@ -149,8 +149,10 @@ async fn command_handler(
     let telegram_id = msg.chat.id.0;
     let username = msg.from.as_ref().and_then(|u| u.username.clone());
 
-    // Ensure user exists and has default watches on any first interaction
-    let defaults_added = ensure_user_registered(&state, telegram_id, username.as_deref());
+    // Ensure user exists and has default watches on any first interaction. A group is
+    // never a user: /status in a group once registered it, and stake alerts went to it.
+    let defaults_added =
+        !in_group && ensure_user_registered(&state, telegram_id, username.as_deref());
     if defaults_added {
         // Backfill history for newly added default watches
         for (address, _) in DEFAULT_WATCHES {

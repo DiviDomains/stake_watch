@@ -3,7 +3,7 @@ use chrono::NaiveDateTime;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use tracing::info;
+use tracing::{info, warn};
 
 /// Thread-safe database connection handle.
 pub type DbPool = Arc<Mutex<Connection>>;
@@ -277,6 +277,16 @@ fn run_migrations(conn: &Connection) -> Result<()> {
         )?;
     }
 
+    // A group or channel is never a user: drop any that got registered (the public
+    // Divi group did, through /status, and received stake alerts).
+    let mut groups = 0;
+    for table in ["watched_addresses", "alert_subscriptions", "fork_watchers", "users"] {
+        groups += conn.execute(&format!("DELETE FROM {table} WHERE telegram_id <= 0"), [])?;
+    }
+    if groups > 0 {
+        warn!(rows = groups, "Removed group and channel registrations");
+    }
+
     Ok(())
 }
 
@@ -304,7 +314,17 @@ fn now_str() -> String {
 // User operations
 // ---------------------------------------------------------------------------
 
+/// Only a private chat (a positive id) is a user. A group or channel id is
+/// negative: alerts, watches and subscriptions must never be stored for one.
+fn require_private(telegram_id: i64) -> Result<()> {
+    if telegram_id <= 0 {
+        anyhow::bail!("{telegram_id} is a group or channel, not a user");
+    }
+    Ok(())
+}
+
 pub fn add_user(db: &DbPool, telegram_id: i64, username: Option<&str>) -> Result<()> {
+    require_private(telegram_id)?;
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
     conn.execute(
         "INSERT OR IGNORE INTO users (telegram_id, telegram_username) VALUES (?1, ?2)",
@@ -333,7 +353,7 @@ pub fn get_all_users(db: &DbPool) -> Result<Vec<User>> {
 
 pub fn get_all_user_ids(db: &DbPool) -> Result<Vec<i64>> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
-    let mut stmt = conn.prepare("SELECT telegram_id FROM users ORDER BY created_at")?;
+    let mut stmt = conn.prepare("SELECT telegram_id FROM users WHERE telegram_id > 0 ORDER BY created_at")?;
     let ids = stmt
         .query_map([], |row| row.get::<_, i64>(0))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -371,6 +391,7 @@ pub fn add_watch_full(
     sort_order: i32,
     include_in_portfolio: bool,
 ) -> Result<bool> {
+    require_private(telegram_id)?;
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
     let inserted = conn.execute(
         "INSERT OR IGNORE INTO watched_addresses (telegram_id, address, label, sort_order, include_in_portfolio) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -480,7 +501,7 @@ pub fn get_watch_label(db: &DbPool, telegram_id: i64, address: &str) -> Result<O
 
 pub fn get_users_for_address(db: &DbPool, address: &str) -> Result<Vec<i64>> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
-    let mut stmt = conn.prepare("SELECT telegram_id FROM watched_addresses WHERE address = ?1")?;
+    let mut stmt = conn.prepare("SELECT telegram_id FROM watched_addresses WHERE address = ?1 AND telegram_id > 0")?;
     let rows = stmt
         .query_map(params![address], |row| row.get::<_, i64>(0))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -643,6 +664,7 @@ pub fn add_alert_subscription(
     alert_type: &str,
     threshold: f64,
 ) -> Result<bool> {
+    require_private(telegram_id)?;
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
     let inserted = conn.execute(
         "INSERT OR REPLACE INTO alert_subscriptions (telegram_id, alert_type, threshold) VALUES (?1, ?2, ?3)",
@@ -687,7 +709,7 @@ pub fn get_subscribers_for_alert_type(
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
     let mut stmt = conn.prepare(
         "SELECT id, telegram_id, alert_type, threshold, created_at
-         FROM alert_subscriptions WHERE alert_type = ?1",
+         FROM alert_subscriptions WHERE alert_type = ?1 AND telegram_id > 0",
     )?;
     let rows = stmt
         .query_map(params![alert_type], |row| {
@@ -708,6 +730,7 @@ pub fn get_subscribers_for_alert_type(
 // ---------------------------------------------------------------------------
 
 pub fn add_fork_watcher(db: &DbPool, telegram_id: i64) -> Result<bool> {
+    require_private(telegram_id)?;
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
     let inserted = conn.execute(
         "INSERT OR IGNORE INTO fork_watchers (telegram_id) VALUES (?1)",
@@ -727,7 +750,7 @@ pub fn remove_fork_watcher(db: &DbPool, telegram_id: i64) -> Result<bool> {
 
 pub fn get_fork_watchers(db: &DbPool) -> Result<Vec<i64>> {
     let conn = db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
-    let mut stmt = conn.prepare("SELECT telegram_id FROM fork_watchers")?;
+    let mut stmt = conn.prepare("SELECT telegram_id FROM fork_watchers WHERE telegram_id > 0")?;
     let rows = stmt
         .query_map([], |row| row.get::<_, i64>(0))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -877,4 +900,52 @@ pub fn set_meta(db: &DbPool, key: &str, value: &str) -> Result<()> {
         params![key, value],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GROUP: i64 = -1001181510141;
+
+    fn temp_db() -> DbPool {
+        let path = std::env::temp_dir().join(format!("sw-test-{}-{:?}.db", std::process::id(), std::thread::current().id()));
+        let _ = std::fs::remove_file(&path);
+        init_db(path.to_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn groups_cannot_be_registered() {
+        let db = temp_db();
+        assert!(add_user(&db, GROUP, Some("diviproject")).is_err());
+        assert!(add_watch_full(&db, GROUP, "DPujt2XAdHyRcZNB5ySZBBVKjzY2uXZGYq", None, 0, false).is_err());
+        assert!(add_alert_subscription(&db, GROUP, "lottery_block", 0.0).is_err());
+        assert!(add_fork_watcher(&db, GROUP).is_err());
+        add_user(&db, 887521560, None).unwrap();
+        assert_eq!(get_all_user_ids(&db).unwrap(), vec![887521560]);
+    }
+
+    #[test]
+    fn groups_are_never_recipients_and_are_removed_at_startup() {
+        let path = std::env::temp_dir().join(format!("sw-test-mig-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let addr = "DPujt2XAdHyRcZNB5ySZBBVKjzY2uXZGYq";
+        {
+            let db = init_db(path.to_str().unwrap()).unwrap();
+            add_watch_full(&db, 887521560, addr, None, 0, false).unwrap();
+            add_fork_watcher(&db, 887521560).unwrap();
+            let conn = db.lock().unwrap();
+            conn.execute("INSERT INTO users (telegram_id) VALUES (?1)", params![GROUP]).unwrap();
+            conn.execute("INSERT INTO watched_addresses (telegram_id, address) VALUES (?1, ?2)", params![GROUP, addr]).unwrap();
+            conn.execute("INSERT INTO fork_watchers (telegram_id) VALUES (?1)", params![GROUP]).unwrap();
+        }
+        let db = init_db(path.to_str().unwrap()).unwrap();
+        assert_eq!(get_users_for_address(&db, addr).unwrap(), vec![887521560]);
+        assert_eq!(get_fork_watchers(&db).unwrap(), vec![887521560]);
+        let left: i64 = db.lock().unwrap()
+            .query_row("SELECT (SELECT COUNT(*) FROM users WHERE telegram_id <= 0) + (SELECT COUNT(*) FROM watched_addresses WHERE telegram_id <= 0) + (SELECT COUNT(*) FROM fork_watchers WHERE telegram_id <= 0)", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
+        let _ = std::fs::remove_file(&path);
+    }
 }
