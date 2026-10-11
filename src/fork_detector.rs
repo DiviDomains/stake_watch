@@ -389,7 +389,10 @@ impl ForkDetector {
             };
             let reorg = before.as_ref().and_then(|b| find_reorg(b, &now));
             self.record_reorg_status(&ep.name, reorg);
-            let Some(reorg) = reorg else { continue };
+            let Some(reorg) = reorg else {
+                info!(endpoint = %ep.name, tip = now.keys().next_back().copied().unwrap_or(0), first = before.is_none(), "Reorg check: none");
+                continue;
+            };
             if reorg.depth <= self.config.max_branch_len {
                 info!(endpoint = %ep.name, fork_point = reorg.fork_point, depth = reorg.depth, "Reorg (normal)");
                 continue;
